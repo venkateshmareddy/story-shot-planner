@@ -7,9 +7,9 @@ import { Sidebar } from "./sidebar";
 import { StoryEditor } from "./story-editor";
 import type { ResolvedInterviewTurn } from "@/lib/interview";
 import { MAX_SESSION_TITLE, newId, planSignature, type ChatMessage, type StorySession } from "@/lib/session";
-import { MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
-import type { RefineMessage, ShotPlan } from "@/lib/story-planning";
-import { askInterview, generatePlan, refinePlan, transcribeVoice } from "@/lib/studio-agent";
+import { MAX_ANSWER_CHARACTERS, MAX_CHAT_HISTORY, MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
+import type { ShotPlan } from "@/lib/story-planning";
+import { askDirector, askInterview, generatePlan, transcribeVoice } from "@/lib/studio-agent";
 import { useSessions } from "@/lib/use-sessions";
 import { useTokenBudget } from "@/lib/use-token-budget";
 import type { UsageRecord } from "@/lib/usage";
@@ -51,9 +51,10 @@ export function StudioApp() {
   }, [store.activeId]);
 
   const recordUsage = useCallback(
-    (id: string, usage?: UsageRecord) => {
-      if (!usage) return;
-      store.update(id, (session) => ({ ...session, usage: [...session.usage, usage] }));
+    (id: string, usage?: UsageRecord | UsageRecord[]) => {
+      const records = Array.isArray(usage) ? usage : usage ? [usage] : [];
+      if (records.length === 0) return;
+      store.update(id, (session) => ({ ...session, usage: [...session.usage, ...records] }));
     },
     [store],
   );
@@ -123,7 +124,12 @@ export function StudioApp() {
   }
 
   async function sendDiscovery(session: StorySession, text: string) {
-    const userMessage: ChatMessage = { id: newId(), role: "user", text };
+    const userMessage: ChatMessage = {
+      id: newId(),
+      role: "user",
+      text,
+      answerIndex: session.pendingQuestion ? session.answered.length : undefined,
+    };
     const nextAnswered = session.pendingQuestion
       ? [...session.answered, { question: session.pendingQuestion, answer: text }]
       : session.answered;
@@ -157,13 +163,21 @@ export function StudioApp() {
     if (!session.plan) return;
     const baseSignature = planSignature(session.plan);
     const userMessage: ChatMessage = { id: newId(), role: "user", text };
-    const history: RefineMessage[] = session.messages.map((message) => ({ role: message.role, text: message.text }));
+    const history = session.messages
+      .slice(-MAX_CHAT_HISTORY)
+      .map((message) => ({ role: message.role, text: message.text }));
     store.update(session.id, (current) => ({ ...current, messages: [...current.messages, userMessage] }));
     setInput("");
     setBusy(true);
     setError("");
 
-    const result = await refinePlan(session.plan, history, text);
+    const result = await askDirector({
+      plan: session.plan,
+      messages: history,
+      message: text,
+      answers: session.answered,
+      collected: session.collected,
+    });
     setBusy(false);
     if (!result.ok) {
       store.update(session.id, (current) => ({
@@ -174,24 +188,31 @@ export function StudioApp() {
       setError(result.error);
       return;
     }
+    const { response } = result;
     const agentMessage: ChatMessage = {
       id: newId(),
       role: "agent",
-      text: result.reply,
-      changeSummary: result.changeSummary,
-      proposedPlan: result.plan,
-      status: "pending",
-      baseSignature,
+      text: response.reply,
+      specialists: response.specialists.length > 0 ? response.specialists : undefined,
+      failedSpecialists: response.failed.length > 0 ? response.failed : undefined,
+      recommendations: response.recommendations.length > 0 ? response.recommendations : undefined,
+      conflicts: response.conflicts.length > 0 ? response.conflicts : undefined,
+      ...(response.plan
+        ? { changeSummary: response.changeSummary, proposedPlan: response.plan, status: "pending" as const, baseSignature }
+        : {}),
     };
-    store.update(session.id, (current) => ({ ...current, messages: [...current.messages, agentMessage] }));
-    recordUsage(session.id, result.usage);
+    store.update(session.id, (current) => ({
+      ...current,
+      messages: [...current.messages, agentMessage],
+      usage: [...current.usage, ...response.usage],
+    }));
   }
 
   function send() {
     if (!active || busy || transcribing) return;
     const text = input.trim();
     if (!text) return;
-    if (active.phase === "discovery") void sendDiscovery(active, text.slice(0, MAX_CHAT_MESSAGE_CHARACTERS));
+    if (active.phase === "discovery") void sendDiscovery(active, text.slice(0, MAX_ANSWER_CHARACTERS));
     else void sendRefine(active, text.slice(0, MAX_CHAT_MESSAGE_CHARACTERS));
   }
 
@@ -203,7 +224,7 @@ export function StudioApp() {
     }
     setBusy(true);
     setError("");
-    const result = await generatePlan(active.title, active.answered);
+    const result = await generatePlan(active.title, active.answered, active.collected);
     setBusy(false);
     if (!result.ok) {
       setError(result.error);
@@ -242,6 +263,20 @@ export function StudioApp() {
         item.id === message.id ? { ...item, status: "accepted", proposedPlan: undefined } : item,
       ),
     }));
+  }
+
+  function editAnswer(messageId: string, value: string): boolean {
+    if (!active || busy || active.phase !== "discovery") return false;
+    const text = value.trim().slice(0, MAX_ANSWER_CHARACTERS);
+    if (!text) return false;
+    const index = active.messages.find((message) => message.id === messageId)?.answerIndex;
+    if (index === undefined || !active.answered[index]) return false;
+    store.update(active.id, (current) => ({
+      ...current,
+      answered: current.answered.map((item, position) => (position === index ? { ...item, answer: text } : item)),
+      messages: current.messages.map((message) => (message.id === messageId ? { ...message, text } : message)),
+    }));
+    return true;
   }
 
   function rejectProposal(id: string) {
@@ -412,6 +447,7 @@ export function StudioApp() {
               onGeneratePlan={doGeneratePlan}
               onAccept={acceptProposal}
               onReject={rejectProposal}
+              onEditAnswer={editAnswer}
               onVoice={handleVoice}
               onVoiceActive={() => {}}
               onRetry={() => void openConversation(active.id, active.title)}

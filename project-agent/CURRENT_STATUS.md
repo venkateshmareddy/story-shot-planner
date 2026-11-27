@@ -48,6 +48,11 @@ No console errors, page errors or unexpected navigations in the browser runs.
 - Text sent after the interview completes is not sent either.
 - The plan prompt forbids inventing dialogue, and the route only accepts dialogue copied verbatim from `story` — which is just the title. **Studio plans therefore cannot contain dialogue** (a plan that does gets a 502). Needs a product decision (affects D-015).
 
+## Uncommitted since checkpoint `2a4621b`
+
+- **Story Editor reworked to read-first (clutter reduction).** Default is a scannable read view (logline, intent, character/location lists, compact shot cards). Editing is opt-in per section: an **Edit/Done** toggle on *Overview* (covers title, logline, intent, characters, locations) and one per **scene**; inputs render only for the section being edited. **Scenes are collapsible** (chevron + shot count). Same `onEditPlan`/`onTitleChange` plumbing, so manual edits and Apply/Discard are unchanged. Files: `src/app/story-editor.tsx` (rewrite), `src/app/globals.css` (12 new selectors). Verification: **code-level** + lint/typecheck/test/build pass; **not browser-verified yet**.
+- Earlier UX passes (also post-checkpoint): sidebar collapse toggle moved into the sidebar header; token-budget meter on the usage view with a budget setting; ChatGPT-style focused Settings screen (section nav + Back to app).
+
 ## Known gaps and bugs
 
 1. **Decision needed — plan input.** See above: no dialogue, and collected details unused.

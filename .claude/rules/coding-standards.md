@@ -22,7 +22,7 @@ All code and architecture must be production-grade and designed so the system ca
 - No new dependencies without a stated reason. Prefer the platform (`node:test`, Web APIs).
 - No comments by default — one short line only for a non-obvious why.
 - Preserve working behaviour. Never change behaviour just to make a test pass.
-- Tests use `node:test` in `test/`. Any module a test imports must resolve under plain Node: package imports or type-only `@/` imports only (see `project-agent/PROJECT_MEMORY.md`).
+- Tests use `node:test` in `test/`, run through `tsx` (`npm test`), with mocked model output — never a real API key.
 
 ## Before you finish
 

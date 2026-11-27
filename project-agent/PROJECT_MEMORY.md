@@ -28,14 +28,14 @@ A movie-focused AI creative director — not a generic story generator. Chat-fir
 
 ## Gotchas
 
-- **Test imports.** `node --test` runs `.ts` natively but can't resolve the `@/` alias or extensionless relative imports at runtime. A module a test imports may use only package imports or type-only `@/` imports. That's why `interview.ts` and `formats.ts` import only `zod`.
+- **Test imports.** Plain `node --test` can't resolve the `@/` alias or extensionless relative imports, so `npm test` runs through `tsx` (D-019).
 - **Structured outputs.** Avoid a union at the root of a `zodTextFormat` schema. The interview turn uses one flat object with a `complete` boolean.
-- **Verbatim dialogue.** The plan route rejects a plan whose dialogue isn't copied verbatim from the story. The plan prompt's directive and this validator must stay aligned (covered by `test/prompts.test.ts`).
+- **Plan validation is structural only** (`src/lib/server/plan-validation.ts`): scenes, shots, positive durations, non-empty dialogue. The old verbatim-dialogue rule was removed (D-017) because the Studio has no source story text.
 - **Next.js 16.** Dynamic route params are a `Promise` and must be awaited.
 - **Dev server vs build.** Don't run `npm run build` while a browser test is using `next dev`.
 - **API key.** It's a project key that can see only `gpt-6.2-sol` and `gpt-transcribe`. A 401 hides whether a model exists — fix the key first, then check models.
 - **Secrets.** Check keys by HTTP status and model list only; never print any part of a key.
-- **The Studio has no story text.** The project title is sent as `story` to the interview and plan steps. Anything that validates against `story` (the verbatim-dialogue check) sees only the title.
+- **The Studio has no story text.** The project title is sent as `story`; the plan step also gets the interview answers and collected details, which carry the actual story.
 - **Editing earlier answers** existed only in the removed legacy workflow UI. The Studio never implemented it.
 
 ## Constraints

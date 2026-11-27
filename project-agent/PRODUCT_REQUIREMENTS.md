@@ -26,7 +26,8 @@ A chat-first AI creative director for filmmaking. Through conversation it develo
 - Challenge choices constructively — be friendly, imaginative and honest. The filmmaker has the final say.
 - When the filmmaker says "you decide", make one confident creative choice.
 - Recognise when enough is known and recommend moving to planning.
-- When planning from an approved story, never invent speaking characters, events or dialogue; dialogue is copied verbatim from the story.
+- Plans are built from the project title, every interview answer (as edited) and all collected creative details. The AI may write original dialogue but must not contradict approved answers or details.
+- Specialist advice (story, cinematography, sound, editing, continuity) comes back as one Creative Director reply; any change it proposes needs Apply.
 - Never silently replace an approved creative decision — propose, explain, and wait for Apply.
 
 ## Approved direction — not in the MVP (needs approval before building)

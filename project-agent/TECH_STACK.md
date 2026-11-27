@@ -26,7 +26,8 @@ Versions are the ones `package-lock.json` installs, checked on 2026-11-27. Updat
 | @biomejs/biome | 2.6.9 | `biome lint src` with default rules (no `biome.json`) |
 | typescript | 5.9.3 | `tsc --noEmit` after `next typegen` |
 | @types/node / @types/react / @types/react-dom | 24.19.4 / 19.3.3 / 19.3.0 | |
-| Test runner | Node built-in `node:test` | `.ts` files run natively via type stripping — no test dependencies |
+| Test runner | Node built-in `node:test` | Run through `tsx` |
+| tsx | 4.23.15 (dev only) | Resolves `@/` and relative imports for `npm test` (D-019) |
 
 ## AI models
 
@@ -50,6 +51,6 @@ Verified available on the account on 2026-11-27 with `GET /v1/models` (HTTP 200)
 | `npm run dev` | Dev server on http://localhost:3000 |
 | `npm run lint` | Biome lint of `src` |
 | `npm run typecheck` | `next typegen && tsc --noEmit` |
-| `npm test` | `node --test test/*.test.ts` |
+| `npm test` | `node --import tsx --test test/*.test.ts` |
 | `npm run build` | Production build |
 | `npm start` | Serve the production build |

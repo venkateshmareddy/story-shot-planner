@@ -11,7 +11,7 @@
     "start": "next start",
     "lint": "biome lint src",
     "typecheck": "next typegen && tsc --noEmit",
-    "test": "node --test test/*.test.ts"
+    "test": "node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
     "next": "16.4.6",
@@ -26,6 +26,7 @@
     "@types/node": "24.19.4",
     "@types/react": "19.3.3",
     "@types/react-dom": "19.3.0",
+    "tsx": "^4.23.15",
     "typescript": "5.9.3"
   }
 }

@@ -1,10 +1,18 @@
-import type { ResolvedInterviewTurn } from "@/lib/interview";
 import {
+  type DirectorRequest,
+  type DirectorResponse,
+  type Recommendation,
+  SPECIALIST_LABELS,
+  type SpecialistId,
+} from "@/lib/agents/types";
+import type { CollectedItem, ResolvedInterviewTurn } from "@/lib/interview";
+import {
+  MAX_ANSWER_CHARACTERS,
   MAX_CHAT_HISTORY,
   MAX_CHAT_MESSAGE_CHARACTERS,
   MAX_VOICE_BYTES,
 } from "@/lib/story-input";
-import type { RefineMessage, ShotPlan } from "@/lib/story-planning";
+import type { ShotPlan } from "@/lib/story-planning";
 import { isUsageRecord, type UsageRecord } from "@/lib/usage";
 
 export type AgentResult<T> = ({ ok: true } & T) | { ok: false; error: string };
@@ -47,11 +55,19 @@ export async function askInterview(
   return { ok: true, turn: data as unknown as ResolvedInterviewTurn, usage: pickUsage(data) };
 }
 
+const MAX_COLLECTED_ITEMS = 40;
+
 export async function generatePlan(
   story: string,
   answers: { question: string; answer: string }[],
+  collected: CollectedItem[],
 ): Promise<AgentResult<{ plan: ShotPlan } & WithUsage>> {
-  const result = await postJson("/api/story/plan", { step: "plan", story, answers });
+  const result = await postJson("/api/story/plan", {
+    step: "plan",
+    story,
+    answers,
+    collected: collected.slice(0, MAX_COLLECTED_ITEMS),
+  });
   if (!result.ok) return result;
   const { data } = result;
   if (!data.title || !Array.isArray(data.scenes)) {
@@ -60,28 +76,66 @@ export async function generatePlan(
   return { ok: true, plan: data as unknown as ShotPlan, usage: pickUsage(data) };
 }
 
-export async function refinePlan(
-  plan: ShotPlan,
-  history: RefineMessage[],
-  message: string,
-): Promise<AgentResult<{ reply: string; changeSummary: string[]; plan: ShotPlan } & WithUsage>> {
-  const trimmedHistory = history
-    .map((item): RefineMessage => ({ role: item.role, text: item.text.slice(0, MAX_CHAT_MESSAGE_CHARACTERS) }))
-    .filter((item) => item.text.trim().length > 0)
-    .slice(-MAX_CHAT_HISTORY);
-  const result = await postJson("/api/story/refine", {
-    plan,
-    messages: trimmedHistory,
-    message: message.slice(0, MAX_CHAT_MESSAGE_CHARACTERS),
-  });
+function isSpecialistId(value: unknown): value is SpecialistId {
+  return typeof value === "string" && Object.hasOwn(SPECIALIST_LABELS, value);
+}
+
+function specialistList(value: unknown): SpecialistId[] {
+  return Array.isArray(value) ? value.filter(isSpecialistId) : [];
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "") : [];
+}
+
+function isRecommendation(value: unknown): value is Recommendation {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    isSpecialistId(record.specialist) &&
+    typeof record.target === "string" &&
+    typeof record.recommendation === "string" &&
+    typeof record.rationale === "string" &&
+    (record.priority === "high" || record.priority === "medium" || record.priority === "low")
+  );
+}
+
+function isShotPlan(value: unknown): value is ShotPlan {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.title === "string" && Array.isArray(record.scenes);
+}
+
+export async function askDirector(request: DirectorRequest): Promise<AgentResult<{ response: DirectorResponse }>> {
+  const body: DirectorRequest = {
+    plan: request.plan,
+    messages: request.messages
+      .map((item) => ({ role: item.role, text: item.text.slice(0, MAX_CHAT_MESSAGE_CHARACTERS) }))
+      .filter((item) => item.text.trim().length > 0)
+      .slice(-MAX_CHAT_HISTORY),
+    message: request.message.slice(0, MAX_CHAT_MESSAGE_CHARACTERS),
+    answers: request.answers?.map((item) => ({ question: item.question, answer: item.answer.slice(0, MAX_ANSWER_CHARACTERS) })),
+    collected: request.collected?.slice(0, MAX_COLLECTED_ITEMS),
+  };
+  const result = await postJson("/api/story/director", body);
   if (!result.ok) return result;
   const { data } = result;
+  if (typeof data.reply !== "string" || (data.plan != null && !isShotPlan(data.plan))) {
+    return { ok: false, error: "The creative team returned an unexpected result. Try again." };
+  }
   return {
     ok: true,
-    reply: typeof data.reply === "string" ? data.reply : "",
-    changeSummary: Array.isArray(data.changeSummary) ? (data.changeSummary as string[]) : [],
-    plan: data.plan as ShotPlan,
-    usage: pickUsage(data),
+    response: {
+      mode: data.mode === "refine" ? "refine" : "specialists",
+      reply: data.reply,
+      specialists: specialistList(data.specialists),
+      failed: specialistList(data.failed),
+      recommendations: Array.isArray(data.recommendations) ? data.recommendations.filter(isRecommendation) : [],
+      conflicts: stringList(data.conflicts),
+      changeSummary: stringList(data.changeSummary),
+      plan: isShotPlan(data.plan) ? data.plan : null,
+      usage: Array.isArray(data.usage) ? data.usage.filter(isUsageRecord) : [],
+    },
   };
 }
 

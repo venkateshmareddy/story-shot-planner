@@ -14,8 +14,13 @@ test("composeInstructions is deterministic and starts with SOURCE_RULES", () => 
 
 test("plan/short_film carries the behavior-critical directives", () => {
   const composed = composeInstructions("plan", "short_film");
+  assert.ok(composed.startsWith(SOURCE_RULES));
+  assert.ok(composed.includes("interview answers"));
+  assert.ok(composed.includes("collected creative details"));
+  assert.ok(composed.includes("original dialogue"));
   assert.ok(composed.includes("without surrounding quotation marks"));
-  assert.ok(composed.includes("Never invent speaking characters, story events or lines"));
+  assert.ok(!composed.includes("copy one contiguous spoken fragment exactly"));
+  assert.ok(!composed.includes("Never invent speaking characters, story events or lines"));
   assert.ok(composed.includes("3–6 seconds"));
 });
 

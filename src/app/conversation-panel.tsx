@@ -1,9 +1,171 @@
 "use client";
 
-import { useEffect, useRef, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { VoiceRecorder } from "./voice-recorder";
-import { MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
+import { type Recommendation, SPECIALIST_LABELS, type SpecialistId } from "@/lib/agents/types";
+import { MAX_ANSWER_CHARACTERS, MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
 import type { ChatMessage, StorySession } from "@/lib/session";
+
+const PRIORITY_LABELS: Record<Recommendation["priority"], string> = { high: "High", medium: "Medium", low: "Low" };
+const OPEN_NOTES_LIMIT = 3;
+
+function specialistLabel(id: SpecialistId): string {
+  return SPECIALIST_LABELS[id] ?? id;
+}
+
+function groupBySpecialist(recommendations: Recommendation[]): [SpecialistId, Recommendation[]][] {
+  const groups = new Map<SpecialistId, Recommendation[]>();
+  for (const item of recommendations) groups.set(item.specialist, [...(groups.get(item.specialist) ?? []), item]);
+  return [...groups.entries()];
+}
+
+function TeamNotes({ message }: { message: ChatMessage }) {
+  const recommendations = message.recommendations ?? [];
+  const conflicts = message.conflicts ?? [];
+  const failed = message.failedSpecialists ?? [];
+  if (recommendations.length === 0 && conflicts.length === 0 && failed.length === 0) return null;
+  return (
+    <div className="chat-team">
+      {recommendations.length > 0 && (
+        <details className="chat-team-details" open={recommendations.length <= OPEN_NOTES_LIMIT}>
+          <summary>Team recommendations ({recommendations.length})</summary>
+          {groupBySpecialist(recommendations).map(([specialist, items]) => (
+            <div className="chat-rec-group" key={specialist}>
+              <p className="chat-team-head">{specialistLabel(specialist)}</p>
+              <ul className="chat-rec-list">
+                {items.map((item, index) => (
+                  // biome-ignore lint/suspicious/noArrayIndexKey: Recommendations are fixed per reply and may repeat.
+                  <li className="chat-rec" key={index}>
+                    <div className="chat-rec-meta">
+                      <span className="chat-rec-target">{item.target}</span>
+                      <span className={`chat-rec-priority chat-rec-priority-${item.priority}`}>
+                        {PRIORITY_LABELS[item.priority] ?? item.priority}
+                        <span className="sr-only"> priority</span>
+                      </span>
+                    </div>
+                    <p>{item.recommendation}</p>
+                    {item.rationale && <p className="muted chat-rec-why">{item.rationale}</p>}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </details>
+      )}
+      {conflicts.length > 0 && (
+        <div className="chat-team-conflicts">
+          <p className="chat-team-head">Where the team disagrees</p>
+          <ul>
+            {conflicts.map((conflict, index) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: Conflicts are fixed per reply and may repeat.
+              <li key={index}>{conflict}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {failed.length > 0 && (
+        <p className="muted chat-team-failed">
+          Couldn’t reach {failed.map(specialistLabel).join(", ")} this time — their notes are missing from this reply.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function UserBubble({
+  message,
+  canEdit,
+  busy,
+  edited,
+  onSave,
+}: {
+  message: ChatMessage;
+  canEdit: boolean;
+  busy: boolean;
+  edited: boolean;
+  onSave: (text: string) => boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  const wasEditing = useRef(false);
+  const fieldId = `answer-edit-${message.id}`;
+  const open = editing && canEdit;
+
+  useEffect(() => {
+    if (open) fieldRef.current?.focus();
+    else if (wasEditing.current) editButtonRef.current?.focus();
+    wasEditing.current = open;
+  }, [open]);
+
+  const trimmed = draft.trim();
+  const saveDisabled = busy || !trimmed || trimmed === message.text.trim();
+
+  function save() {
+    if (saveDisabled) return;
+    if (onSave(draft)) setEditing(false);
+  }
+
+  function onEditKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setEditing(false);
+    }
+  }
+
+  if (open) {
+    return (
+      <div className="chat-bubble chat-user chat-user-editing">
+        <label className="chat-edit-label" htmlFor={fieldId}>
+          Edit your answer
+        </label>
+        <textarea
+          id={fieldId}
+          ref={fieldRef}
+          rows={3}
+          value={draft}
+          maxLength={MAX_ANSWER_CHARACTERS}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={onEditKeyDown}
+        />
+        <div className="chat-edit-actions">
+          <button className="button secondary" type="button" onClick={() => setEditing(false)}>
+            Cancel
+          </button>
+          <button className="button" type="button" disabled={saveDisabled} onClick={save}>
+            Save
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="chat-bubble chat-user">
+      <p>{message.text}</p>
+      {(edited || (canEdit && !busy)) && (
+        <div className="chat-user-meta">
+          {edited && <span className="chat-edited">edited</span>}
+          {canEdit && !busy && (
+            <button
+              ref={editButtonRef}
+              className="chat-edit-btn"
+              type="button"
+              aria-label="Edit this answer"
+              onClick={() => {
+                setDraft(message.text);
+                setEditing(true);
+              }}
+            >
+              Edit
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
 
 export function ConversationPanel({
   session,
@@ -18,6 +180,7 @@ export function ConversationPanel({
   onGeneratePlan,
   onAccept,
   onReject,
+  onEditAnswer,
   onVoice,
   onVoiceActive,
   onRetry,
@@ -34,12 +197,14 @@ export function ConversationPanel({
   onGeneratePlan: () => void;
   onAccept: (message: ChatMessage) => void;
   onReject: (id: string) => void;
+  onEditAnswer: (messageId: string, text: string) => boolean;
   onVoice: (file: File) => void;
   onVoiceActive: (active: boolean) => void;
   onRetry: () => void;
 }) {
   const logEnd = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [editedIds, setEditedIds] = useState<ReadonlySet<string>>(() => new Set());
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll to the newest message when the log grows or a reply is pending.
   useEffect(() => {
@@ -54,6 +219,13 @@ export function ConversationPanel({
   }
 
   const showEmptyRetry = session.messages.length === 0 && !busy;
+  const discovery = session.phase === "discovery";
+
+  function saveAnswer(messageId: string, text: string): boolean {
+    const saved = onEditAnswer(messageId, text);
+    if (saved) setEditedIds((previous) => new Set(previous).add(messageId));
+    return saved;
+  }
 
   return (
     <section className="conversation-panel panel" aria-label="AI conversation">
@@ -81,13 +253,22 @@ export function ConversationPanel({
         ) : (
           session.messages.map((message) =>
             message.role === "user" ? (
-              <div className="chat-bubble chat-user" key={message.id}>
-                <p>{message.text}</p>
-              </div>
+              <UserBubble
+                key={message.id}
+                message={message}
+                canEdit={discovery && message.answerIndex !== undefined}
+                busy={busy}
+                edited={editedIds.has(message.id)}
+                onSave={(text) => saveAnswer(message.id, text)}
+              />
             ) : (
               <div className="chat-bubble chat-agent" key={message.id}>
+                {message.specialists && message.specialists.length > 0 && (
+                  <p className="chat-consulted">Consulted: {message.specialists.map(specialistLabel).join(" · ")}</p>
+                )}
                 <p className="chat-reply">{message.text}</p>
                 {message.suggestion && <p className="muted chat-suggestion">{message.suggestion}</p>}
+                <TeamNotes message={message} />
                 {message.changeSummary && message.changeSummary.length > 0 && (
                   <ul className="chat-changes">
                     {message.changeSummary.map((change, index) => (
@@ -116,7 +297,7 @@ export function ConversationPanel({
         )}
         {busy && (
           <p className="muted chat-busy" role="status">
-            The creative director is thinking…
+            {discovery ? "The creative director is thinking…" : "Consulting the creative team…"}
           </p>
         )}
         <div ref={logEnd} />
@@ -150,7 +331,7 @@ export function ConversationPanel({
           ref={inputRef}
           rows={3}
           value={input}
-          maxLength={MAX_CHAT_MESSAGE_CHARACTERS}
+          maxLength={discovery ? MAX_ANSWER_CHARACTERS : MAX_CHAT_MESSAGE_CHARACTERS}
           placeholder={session.phase === "discovery" ? "Type your answer…" : "Describe the change you want…"}
           onChange={(event) => onInput(event.target.value)}
           onKeyDown={onKeyDown}

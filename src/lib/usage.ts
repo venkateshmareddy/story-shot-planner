@@ -1,4 +1,15 @@
-export type UsageStep = "draft" | "interview" | "plan" | "refine" | "transcribe";
+export type UsageStep =
+  | "draft"
+  | "interview"
+  | "plan"
+  | "refine"
+  | "transcribe"
+  | "orchestrator"
+  | "story-analyst"
+  | "cinematography-director"
+  | "sound-director"
+  | "editing-director"
+  | "continuity-reviewer";
 
 export type UsageRecord = {
   step: UsageStep;

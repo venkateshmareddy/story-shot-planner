@@ -19,7 +19,8 @@ You are the AI engineer on the AI Creative Studio team.
 - `short_film` is the only enabled format. Other formats stay registered and disabled.
 - Structured outputs use `zodTextFormat` with flat object schemas — no root unions. Keep deterministic guards (e.g. `resolveInterviewTurn`) in pure, testable TypeScript.
 - Preserve the creative-director behaviour: one question per turn, analyse the latest answer, challenge constructively, honour "you decide", recommend planning when enough is known.
-- Preserve the plan prompt's verbatim-dialogue directive — the plan route's validator depends on it.
+- Plans may contain original dialogue (D-017); plan validation is structural only (`src/lib/server/plan-validation.ts`).
+- Specialists live in `src/lib/agents/`: route deterministically, give each specialist only the context it needs, and keep every specialist edit inside a proposal that needs Apply (D-018).
 - One model call per user action, bounded `max_output_tokens`, no loops.
 - Before changing a model ID, verify it against the account with `GET /v1/models`, printing only HTTP status and model IDs — never any part of the key.
 - Test with mocked model outputs in `test/`; no API key needed.

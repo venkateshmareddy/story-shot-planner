@@ -3,6 +3,7 @@ import type { z } from "zod";
 import { DEFAULT_FORMAT } from "@/lib/formats";
 import { composeInstructions } from "@/lib/server/prompts";
 import { getOpenAI, jsonError, modelError, STORY_MODEL } from "@/lib/server/openai";
+import { findPlanProblem } from "@/lib/server/plan-validation";
 import { readBody } from "@/lib/server/read-body";
 import { MAX_INTERVIEW_TURNS, interviewTurnOutput, resolveInterviewTurn } from "@/lib/interview";
 import { draftOutput, planOutput, planningRequest } from "@/lib/story-planning";
@@ -59,13 +60,10 @@ export async function POST(request: Request) {
     }
 
     const { output: plan, usage } = await generate(planOutput, 8_000);
-    const source = input.story.replace(/\s+/g, " ");
-    if (!plan.scenes.length || plan.scenes.some((scene) => !scene.shots.length || scene.shots.some(
-      (shot) => !Number.isFinite(shot.seconds) || shot.seconds <= 0 || shot.dialogue.some(
-        ({ line }) => !line.trim() || !source.includes(line.replace(/\s+/g, " ")),
-      ),
-    ))) {
-      return jsonError("The draft contained an invalid shot or dialogue that didn’t match the story. Try again.", 502);
+    const problem = findPlanProblem(plan);
+    if (problem) {
+      console.warn("Rejected model plan", { step: input.step, problem });
+      return jsonError("The draft contained an invalid scene, shot or dialogue entry. Try again.", 502);
     }
     return Response.json({ ...plan, usage });
   } catch (error) {
