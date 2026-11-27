@@ -6,7 +6,7 @@ These repository instructions adapt ECC 2.2.3's common and TypeScript rules to t
 
 - Use Node.js 24 and npm. Run `npm ci` to install the versions pinned in `package-lock.json`.
 - Run `npm run dev` for local development. For application changes, run `npm run lint`, `npm run typecheck`, and `npm run build`, in that order. These match CI. Biome lints `src`, and the typecheck generates Next.js route types before running TypeScript.
-- For changes to the story workflow, verify the affected path from intake through review in the browser. Use synthetic story text and media when testing. Verify error handling and upload limits when changing a route that accepts files.
+- For changes to the story workflow, verify the affected path in the browser, from New Chat through the Story Editor. Use synthetic story text and media when testing. Verify error handling and upload limits when changing a route that accepts files.
 
 ## Next.js and React
 
@@ -25,3 +25,13 @@ These repository instructions adapt ECC 2.2.3's common and TypeScript rules to t
 
 - Keep `OPENAI_API_KEY` in server-side environment variables. Use placeholders in `.env.example` and keep credentials out of client bundles and logs.
 - Enforce shared upload and text limits on the server before processing uploads or calling providers. Return actionable errors without exposing provider internals. Log diagnostic metadata without including story text, uploaded files, or audio.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+## This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->

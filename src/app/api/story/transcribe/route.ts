@@ -1,21 +1,29 @@
+import { AUDIO_FORMATS, type AudioExtension, audioLabel, audioMatches } from "@/lib/audio";
 import { getOpenAI, jsonError, modelError, TRANSCRIPTION_MODEL } from "@/lib/server/openai";
 import { readBody } from "@/lib/server/read-body";
 import { MAX_STORY_CHARACTERS, MAX_VOICE_BYTES } from "@/lib/story-input";
+import { toUsageRecord } from "@/lib/usage";
 
 export const runtime = "nodejs";
 export const maxDuration = 100;
 
-const formats = new Map([
-  ["mp3", "audio/mpeg"],
-  ["wav", "audio/wav"],
-  ["m4a", "audio/mp4"],
-  ["webm", "audio/webm"],
-]);
+function extensionFrom(header: string | null): AudioExtension | null {
+  const extension = header?.trim().toLowerCase() ?? "";
+  return Object.hasOwn(AUDIO_FORMATS, extension) ? (extension as AudioExtension) : null;
+}
+
+function declaredTypeMatches(extension: AudioExtension, header: string | null): boolean {
+  const type = header?.split(";")[0].trim().toLowerCase() ?? "";
+  return !type || (AUDIO_FORMATS[extension] as readonly string[]).includes(type);
+}
 
 export async function POST(request: Request) {
-  const extension = request.headers.get("x-audio-extension") ?? "";
-  const type = formats.get(extension);
-  if (!type) return jsonError("Choose an MP3, WAV, M4A, or WebM file.", 415);
+  const extension = extensionFrom(request.headers.get("x-audio-extension"));
+  if (!extension) return jsonError("Choose an MP3, WAV, M4A, or WebM file.", 415);
+  const label = audioLabel(extension);
+  if (!declaredTypeMatches(extension, request.headers.get("x-audio-type"))) {
+    return jsonError(`This file's type doesn't match ${label} audio. Choose a real ${label} file.`, 415);
+  }
 
   let audio: Uint8Array<ArrayBuffer>;
   try {
@@ -26,6 +34,7 @@ export async function POST(request: Request) {
   } catch {
     return jsonError("The upload was interrupted. Try again.", 400);
   }
+  if (!audioMatches(extension, audio)) return jsonError(`This file doesn't look like real ${label} audio.`, 415);
 
   const client = getOpenAI();
   if (!client) return jsonError("Add OPENAI_API_KEY to the server’s .env file to transcribe audio.", 503);
@@ -33,12 +42,15 @@ export async function POST(request: Request) {
   try {
     const result = await client.audio.transcriptions.create({
       model: TRANSCRIPTION_MODEL,
-      file: new File([audio], `voice-note.${extension}`, { type }),
+      file: new File([audio], `voice-note.${extension}`, { type: AUDIO_FORMATS[extension][0] }),
     });
-    console.info("Model usage", { step: "transcribe", model: TRANSCRIPTION_MODEL, usage: result.usage });
+    const returned = (result as { model?: unknown }).model;
+    const model = typeof returned === "string" && returned ? returned : TRANSCRIPTION_MODEL;
+    const usage = toUsageRecord("transcribe", model, result.usage);
+    console.info("Model usage", { step: "transcribe", model, usage });
     if (!result.text?.trim()) return jsonError("No speech was found in the voice note.", 422);
     if (result.text.length > MAX_STORY_CHARACTERS) return jsonError("Use a shorter voice note.", 422);
-    return Response.json({ text: result.text });
+    return Response.json({ text: result.text, usage });
   } catch (error) {
     return modelError(error, "transcribe");
   }

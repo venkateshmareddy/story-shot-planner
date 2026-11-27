@@ -1,0 +1,61 @@
+export type UsageStep =
+  | "draft"
+  | "interview"
+  | "plan"
+  | "refine"
+  | "transcribe"
+  | "orchestrator"
+  | "story-analyst"
+  | "cinematography-director"
+  | "sound-director"
+  | "editing-director"
+  | "continuity-reviewer"
+  | "image-analysis"
+  | "digest"
+  | "ideas";
+
+export type UsageRecord = {
+  step: UsageStep;
+  model: string;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+};
+
+function count(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+export function toUsageRecord(step: UsageStep, model: string, usage: unknown): UsageRecord {
+  const source = (usage ?? {}) as Record<string, unknown>;
+  const inputTokens = count(source.input_tokens) || count(source.prompt_tokens);
+  const outputTokens = count(source.output_tokens) || count(source.completion_tokens);
+  const totalTokens = count(source.total_tokens) || inputTokens + outputTokens;
+  return { step, model, inputTokens, outputTokens, totalTokens };
+}
+
+export function isUsageRecord(value: unknown): value is UsageRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.step === "string" &&
+    typeof record.model === "string" &&
+    typeof record.inputTokens === "number" &&
+    typeof record.outputTokens === "number" &&
+    typeof record.totalTokens === "number"
+  );
+}
+
+/** One record for a user action that took several model calls; models are the distinct ones the responses named. */
+export function sumUsage(step: UsageStep, records: readonly UsageRecord[]): UsageRecord {
+  const total = (key: "inputTokens" | "outputTokens" | "totalTokens") =>
+    records.reduce((sum, record) => sum + count(record[key]), 0);
+  const model = [...new Set(records.map((record) => record.model).filter(Boolean))].join(", ");
+  return {
+    step,
+    model,
+    inputTokens: total("inputTokens"),
+    outputTokens: total("outputTokens"),
+    totalTokens: total("totalTokens"),
+  };
+}

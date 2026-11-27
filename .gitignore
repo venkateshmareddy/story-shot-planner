@@ -46,3 +46,6 @@ next-env.d.ts
 .eslintcache
 .turbo
 .swc
+
+# project agent knowledge docs (kept local, not in git)
+/project-agent/
