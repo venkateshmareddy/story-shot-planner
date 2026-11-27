@@ -7,9 +7,12 @@ import {
 } from "@/lib/agents/types";
 import type { CollectedItem, ResolvedInterviewTurn } from "@/lib/interview";
 import {
+  BYTES_PER_MB,
   MAX_ANSWER_CHARACTERS,
   MAX_CHAT_HISTORY,
   MAX_CHAT_MESSAGE_CHARACTERS,
+  MAX_STORY_CHARACTERS,
+  MAX_UPLOAD_MB,
   MAX_VOICE_BYTES,
 } from "@/lib/story-input";
 import type { ShotPlan } from "@/lib/story-planning";
@@ -137,6 +140,39 @@ export async function askDirector(request: DirectorRequest): Promise<AgentResult
       usage: Array.isArray(data.usage) ? data.usage.filter(isUsageRecord) : [],
     },
   };
+}
+
+export async function importDocument(file: File): Promise<AgentResult<{ text: string }>> {
+  const extension = file.name.split(".").pop()?.toLowerCase();
+  if (extension !== "txt" && extension !== "pdf") {
+    return { ok: false, error: "Choose a TXT or PDF file." };
+  }
+  const limit = MAX_UPLOAD_MB[extension];
+  if (file.size > limit * BYTES_PER_MB) {
+    return { ok: false, error: `Choose a file that is ${limit} MB or smaller.` };
+  }
+  try {
+    let text: string;
+    if (extension === "pdf") {
+      const response = await fetch("/api/story/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/pdf" },
+        body: file,
+      });
+      const result = (await response.json()) as Record<string, unknown>;
+      if (!response.ok || typeof result.text !== "string") {
+        return { ok: false, error: typeof result.error === "string" ? result.error : "The file couldn’t be imported." };
+      }
+      text = result.text;
+    } else {
+      text = await file.text();
+    }
+    const trimmed = text.trim();
+    if (!trimmed) return { ok: false, error: "That file looks empty." };
+    return { ok: true, text: trimmed.slice(0, MAX_STORY_CHARACTERS) };
+  } catch {
+    return { ok: false, error: "The file couldn’t be imported. Try again or paste the text." };
+  }
 }
 
 export async function transcribeVoice(file: File): Promise<AgentResult<{ text: string } & WithUsage>> {

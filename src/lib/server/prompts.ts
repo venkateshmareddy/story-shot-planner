@@ -8,6 +8,9 @@ export const SOURCE_RULES =
 const CRAFT_PRINCIPLES =
   "You are an experienced cinematic creative director. Serve the story and the creator's intent. Be specific, practical and production-minded.";
 
+export const PLAIN_LANGUAGE =
+  "Write for someone with no film or writing background. Use plain, everyday English: short sentences and common words. Avoid jargon and literary terms such as stakes, arc, beat, logline, motif, diegetic or catharsis; if a film term is truly needed (for example close-up), explain it in a few words. Keep each question under 25 words and each note or reason to one short sentence. Name collected details with simple everyday labels such as Main character, Goal, Problem, Big moment or Ending.";
+
 const STAGE_BASE: Record<Stage, string> = {
   draft:
     "Propose a complete, filmable story from the premise or existing draft. Apply the creator's feedback when supplied. Preserve the premise, voice and established details. Give a short reason explaining your main proposed choice or revision. The creator will approve or edit this proposal.",
@@ -59,5 +62,5 @@ const FORMAT_PROMPTS: Record<FilmFormat, Record<Stage, string>> = {
 };
 
 export function composeInstructions(step: Stage, format: FilmFormat): string {
-  return [SOURCE_RULES, CRAFT_PRINCIPLES, STAGE_BASE[step], FORMAT_PROMPTS[format][step]].join("\n");
+  return [SOURCE_RULES, CRAFT_PRINCIPLES, PLAIN_LANGUAGE, STAGE_BASE[step], FORMAT_PROMPTS[format][step]].join("\n");
 }

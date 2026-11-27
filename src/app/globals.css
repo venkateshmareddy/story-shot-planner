@@ -871,3 +871,54 @@ textarea.editor-input { resize: vertical; }
 @media (max-width: 640px) {
   .chat-user-editing { width: 100%; }
 }
+
+/* Conversation header: Generate-plan button with hover tooltip */
+.studio-chat-head { display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem; }
+.studio-chat-head-main { min-width: 0; }
+.generate-btn { flex-shrink: 0; min-height: 2rem; padding: .35rem .75rem; font-size: .82rem; white-space: nowrap; }
+
+.tip { position: relative; display: inline-flex; flex-shrink: 0; }
+.tip-text {
+  position: absolute;
+  top: calc(100% + .4rem);
+  right: 0;
+  z-index: 5;
+  width: max-content;
+  max-width: 16rem;
+  padding: .5rem .65rem;
+  background: var(--ink);
+  color: var(--paper);
+  font: 400 .78rem/1.35 system-ui, sans-serif;
+  letter-spacing: normal;
+  text-transform: none;
+  border-radius: .45rem;
+  box-shadow: 0 6px 18px rgba(35, 29, 23, .22);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .12s ease;
+  pointer-events: none;
+}
+.tip:hover .tip-text,
+.tip:focus-within .tip-text { opacity: 1; visibility: visible; }
+@media (prefers-reduced-motion: reduce) { .tip-text { transition: none; } }
+
+/* Icon-only composer tools (attach + record) */
+.composer-tools { display: flex; align-items: center; gap: .5rem; }
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  flex-shrink: 0;
+  border: 1px solid var(--line);
+  border-radius: .5rem;
+  background: var(--paper);
+  color: var(--accent);
+  cursor: pointer;
+}
+.icon-btn:hover { border-color: var(--accent); }
+.icon-btn:disabled { opacity: .5; cursor: default; }
+.icon-btn svg { width: 1.15rem; height: 1.15rem; }
+.icon-btn.recording { background: var(--accent); color: #fff; border-color: var(--accent); }
+.voice-status { font-size: .8rem; }

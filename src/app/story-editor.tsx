@@ -69,11 +69,9 @@ function RemoveButton({ label, onClick }: { label: string; onClick: () => void }
 
 export function StoryEditor({
   session,
-  onTitleChange,
   onEditPlan,
 }: {
   session: StorySession;
-  onTitleChange: (title: string) => void;
   onEditPlan: PlanEditor;
 }) {
   const { plan } = session;
@@ -106,9 +104,9 @@ export function StoryEditor({
   if (!plan) {
     return (
       <section className="editor-panel panel" aria-label="Story editor">
-        <header className="editor-head">
+        <header className="editor-head editor-doc-head">
           <p className="muted studio-eyebrow">Story editor</p>
-          <Field label="Project title" value={session.title} onChange={onTitleChange} />
+          <h2 className="studio-title editor-doc-title">{session.title || "Untitled project"}</h2>
         </header>
         <DiscoveryDocument session={session} />
       </section>
@@ -121,11 +119,7 @@ export function StoryEditor({
     <section className="editor-panel panel" aria-label="Story editor">
       <header className="editor-head editor-doc-head">
         <p className="muted studio-eyebrow">Story editor</p>
-        {detailsOpen ? (
-          <Field label="Project title" value={session.title} onChange={onTitleChange} />
-        ) : (
-          <h2 className="studio-title editor-doc-title">{session.title || "Untitled project"}</h2>
-        )}
+        <h2 className="studio-title editor-doc-title">{session.title || "Untitled project"}</h2>
       </header>
 
       <div className="editor-doc" key={`doc-${session.id}`}>

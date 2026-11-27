@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import { VoiceRecorder } from "./voice-recorder";
 import { type Recommendation, SPECIALIST_LABELS, type SpecialistId } from "@/lib/agents/types";
 import { MAX_ANSWER_CHARACTERS, MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
@@ -175,6 +175,7 @@ export function ConversationPanel({
   transcribing,
   voiceError,
   canGeneratePlan,
+  uploading,
   onInput,
   onSend,
   onGeneratePlan,
@@ -183,6 +184,7 @@ export function ConversationPanel({
   onEditAnswer,
   onVoice,
   onVoiceActive,
+  onUpload,
   onRetry,
 }: {
   session: StorySession;
@@ -192,6 +194,7 @@ export function ConversationPanel({
   transcribing: boolean;
   voiceError: string;
   canGeneratePlan: boolean;
+  uploading: boolean;
   onInput: (value: string) => void;
   onSend: () => void;
   onGeneratePlan: () => void;
@@ -200,10 +203,12 @@ export function ConversationPanel({
   onEditAnswer: (messageId: string, text: string) => boolean;
   onVoice: (file: File) => void;
   onVoiceActive: (active: boolean) => void;
+  onUpload: (file: File) => void;
   onRetry: () => void;
 }) {
   const logEnd = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
   const [editedIds, setEditedIds] = useState<ReadonlySet<string>>(() => new Set());
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll to the newest message when the log grows or a reply is pending.
@@ -218,6 +223,12 @@ export function ConversationPanel({
     }
   }
 
+  function onPickFile(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = "";
+    if (file) onUpload(file);
+  }
+
   const showEmptyRetry = session.messages.length === 0 && !busy;
   const discovery = session.phase === "discovery";
 
@@ -230,12 +241,32 @@ export function ConversationPanel({
   return (
     <section className="conversation-panel panel" aria-label="AI conversation">
       <div className="studio-chat-head">
-        <h3>Creative director</h3>
-        <p className="muted">
-          {session.phase === "discovery"
-            ? "Answer one question at a time. The story document fills in as you talk."
-            : "Ask for changes in plain language. Review each proposal before it updates the document."}
-        </p>
+        <div className="studio-chat-head-main">
+          <h3>Creative director</h3>
+          <p className="muted">
+            {session.phase === "discovery"
+              ? "Answer one question at a time. The story document fills in as you talk."
+              : "Ask for changes in plain language. Review each proposal before it updates the document."}
+          </p>
+        </div>
+        {discovery && canGeneratePlan && (
+          <span className="tip">
+            <button
+              className="button generate-btn"
+              type="button"
+              disabled={busy}
+              aria-label="Generate shot plan"
+              aria-describedby="generate-tip"
+              onClick={onGeneratePlan}
+            >
+              Generate plan
+            </button>
+            <span className="tip-text" role="tooltip" id="generate-tip">
+              Turns the conversation so far into a full shot-by-shot plan in the editor. You can keep answering instead —
+              nothing is locked in.
+            </span>
+          </span>
+        )}
       </div>
 
       <div className="chat-log" role="log" aria-live="polite" aria-relevant="additions" aria-label="Conversation">
@@ -309,19 +340,6 @@ export function ConversationPanel({
         </p>
       )}
 
-      {session.phase === "discovery" && canGeneratePlan && (
-        <div className="chat-generate">
-          <p className="muted">
-            {session.readyToPlan
-              ? "Enough gathered — ready when you are."
-              : "You can keep answering, or build the plan now."}
-          </p>
-          <button className="button" type="button" disabled={busy} onClick={onGeneratePlan}>
-            Generate shot plan
-          </button>
-        </div>
-      )}
-
       <div className="chat-compose">
         <label className="sr-only" htmlFor="conversation-input">
           Message the creative director
@@ -337,16 +355,42 @@ export function ConversationPanel({
           onKeyDown={onKeyDown}
         />
         <div className="chat-compose-actions">
-          <VoiceRecorder onActiveChange={onVoiceActive} onRecording={onVoice} />
+          <div className="composer-tools">
+            <input
+              ref={fileRef}
+              className="sr-only"
+              type="file"
+              accept=".txt,.pdf,text/plain,application/pdf"
+              onChange={onPickFile}
+            />
+            <button
+              className="icon-btn"
+              type="button"
+              aria-label="Attach a .txt or .pdf document"
+              title="Attach a .txt or .pdf document"
+              disabled={busy || uploading}
+              onClick={() => fileRef.current?.click()}
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M21.44 11.05 12.25 20.24a5 5 0 0 1-7.07-7.07l9.19-9.19a3 3 0 0 1 4.24 4.24l-9.2 9.19a1 1 0 0 1-1.41-1.41l8.49-8.49" />
+              </svg>
+            </button>
+            <VoiceRecorder onActiveChange={onVoiceActive} onRecording={onVoice} />
+          </div>
           <button
             className="button"
             type="button"
-            disabled={busy || transcribing || !input.trim()}
+            disabled={busy || transcribing || uploading || !input.trim()}
             onClick={onSend}
           >
             Send
           </button>
         </div>
+        {uploading && (
+          <p className="muted" role="status">
+            Reading document…
+          </p>
+        )}
         {transcribing && (
           <p className="muted" role="status">
             Transcribing voice note…

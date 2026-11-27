@@ -9,7 +9,7 @@ import type { ResolvedInterviewTurn } from "@/lib/interview";
 import { MAX_SESSION_TITLE, newId, planSignature, type ChatMessage, type StorySession } from "@/lib/session";
 import { MAX_ANSWER_CHARACTERS, MAX_CHAT_HISTORY, MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
 import type { ShotPlan } from "@/lib/story-planning";
-import { askDirector, askInterview, generatePlan, transcribeVoice } from "@/lib/studio-agent";
+import { askDirector, askInterview, generatePlan, importDocument, transcribeVoice } from "@/lib/studio-agent";
 import { useSessions } from "@/lib/use-sessions";
 import { useTokenBudget } from "@/lib/use-token-budget";
 import type { UsageRecord } from "@/lib/usage";
@@ -27,6 +27,7 @@ export function StudioApp() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [transcribing, setTranscribing] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [voiceError, setVoiceError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -299,11 +300,6 @@ export function StudioApp() {
     });
   }
 
-  function editTitle(value: string) {
-    if (!active) return;
-    store.update(active.id, (current) => ({ ...current, title: value.slice(0, MAX_SESSION_TITLE) }));
-  }
-
   async function handleVoice(file: File) {
     if (!active) return;
     setTranscribing(true);
@@ -316,6 +312,21 @@ export function StudioApp() {
     }
     recordUsage(active.id, result.usage);
     setInput((current) => (current.trim() ? `${current.trim()} ${result.text}` : result.text));
+  }
+
+  async function handleUpload(file: File) {
+    if (!active) return;
+    setUploading(true);
+    setVoiceError("");
+    const result = await importDocument(file);
+    setUploading(false);
+    if (!result.ok) {
+      setVoiceError(result.error);
+      return;
+    }
+    const limit = active.phase === "discovery" ? MAX_ANSWER_CHARACTERS : MAX_CHAT_MESSAGE_CHARACTERS;
+    const text = result.text.slice(0, limit);
+    setInput((current) => (current.trim() ? `${current.trim()}\n\n${text}` : text));
   }
 
   function startNewChat() {
@@ -442,6 +453,7 @@ export function StudioApp() {
               transcribing={transcribing}
               voiceError={voiceError}
               canGeneratePlan={active.phase === "discovery" && active.answered.length >= 1}
+              uploading={uploading}
               onInput={setInput}
               onSend={send}
               onGeneratePlan={doGeneratePlan}
@@ -450,9 +462,10 @@ export function StudioApp() {
               onEditAnswer={editAnswer}
               onVoice={handleVoice}
               onVoiceActive={() => {}}
+              onUpload={handleUpload}
               onRetry={() => void openConversation(active.id, active.title)}
             />
-            <StoryEditor session={active} onTitleChange={editTitle} onEditPlan={editPlan} />
+            <StoryEditor session={active} onEditPlan={editPlan} />
           </div>
         ) : null}
       </main>

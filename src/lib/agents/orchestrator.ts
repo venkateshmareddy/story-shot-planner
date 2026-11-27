@@ -1,6 +1,6 @@
 import type { z } from "zod";
 import type { RefineResult } from "@/lib/server/refine";
-import { SOURCE_RULES } from "@/lib/server/prompts";
+import { PLAIN_LANGUAGE, SOURCE_RULES } from "@/lib/server/prompts";
 import type { RefineRequest } from "@/lib/story-planning";
 import type { UsageRecord, UsageStep } from "@/lib/usage";
 import { cinematographyDirector } from "./cinematography-director";
@@ -83,6 +83,7 @@ const PRIORITY_RANK = { high: 0, medium: 1, low: 2 } as const;
 
 const SYNTHESIS_INSTRUCTIONS = [
   SOURCE_RULES,
+  PLAIN_LANGUAGE,
   "You are the Creative Director leading a film's specialist team. The input holds the filmmaker's message, each specialist's findings (specialists), specialists that could not respond (failed), deterministic edit conflicts (mergeConflicts) and the plan changes proposed for the filmmaker's approval (proposedChanges).",
   "reply: one coherent Creative Director voice addressed to the filmmaker, 80-180 words. Answer the message, lead with the most important recommendations, credit each discipline briefly, explain why the advice matters for the film, and say that proposed changes wait for their approval. Do not add recommendations that are not in the input.",
   "conflicts: one sentence per genuine disagreement or trade-off between specialists, including every mergeConflicts entry, naming the alternative the filmmaker could choose; [] when there is none.",
