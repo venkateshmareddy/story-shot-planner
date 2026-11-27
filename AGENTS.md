@@ -6,7 +6,7 @@ These repository instructions adapt ECC 2.2.3's common and TypeScript rules to t
 
 - Use Node.js 24 and npm. Run `npm ci` to install the versions pinned in `package-lock.json`.
 - Run `npm run dev` for local development. For application changes, run `npm run lint`, `npm run typecheck`, and `npm run build`, in that order. These match CI. Biome lints `src`, and the typecheck generates Next.js route types before running TypeScript.
-- For changes to the story workflow, verify the affected path from intake through review in the browser. Use synthetic story text and media when testing. Verify error handling and upload limits when changing a route that accepts files.
+- For changes to the story workflow, verify the affected path in the browser, from New Chat through the Story Editor. Use synthetic story text and media when testing. Verify error handling and upload limits when changing a route that accepts files.
 
 ## Next.js and React
 

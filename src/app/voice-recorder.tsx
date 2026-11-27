@@ -145,23 +145,3 @@ export function VoiceRecorder({
     </div>
   );
 }
-
-export function VoicePlayback({ file }: { file: File }) {
-  const audio = useRef<HTMLAudioElement>(null);
-
-  useEffect(() => {
-    const player = audio.current;
-    if (!player) return;
-    const url = URL.createObjectURL(file);
-    player.src = url;
-    return () => {
-      player.pause();
-      player.removeAttribute("src");
-      player.load();
-      URL.revokeObjectURL(url);
-    };
-  }, [file]);
-
-  // biome-ignore lint/a11y/useMediaCaption: This is a private preview of the user's audio before transcription.
-  return <audio className="voice-playback" ref={audio} controls aria-label="Preview voice note" />;
-}

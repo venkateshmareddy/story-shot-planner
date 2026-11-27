@@ -10,7 +10,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "biome lint src",
-    "typecheck": "next typegen && tsc --noEmit"
+    "typecheck": "next typegen && tsc --noEmit",
+    "test": "node --test test/*.test.ts"
   },
   "dependencies": {
     "next": "16.4.6",

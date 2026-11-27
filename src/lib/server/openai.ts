@@ -1,7 +1,6 @@
 import OpenAI from "openai";
 
-export const STORY_MODEL = "gpt-6.2-sol";
-export const TRANSCRIPTION_MODEL = "gpt-transcribe";
+export { STORY_MODEL, TRANSCRIPTION_MODEL } from "@/lib/models";
 
 export function getOpenAI() {
   const apiKey = process.env.OPENAI_API_KEY?.trim();

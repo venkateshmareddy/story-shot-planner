@@ -1,6 +1,7 @@
 import { getOpenAI, jsonError, modelError, TRANSCRIPTION_MODEL } from "@/lib/server/openai";
 import { readBody } from "@/lib/server/read-body";
 import { MAX_STORY_CHARACTERS, MAX_VOICE_BYTES } from "@/lib/story-input";
+import { toUsageRecord } from "@/lib/usage";
 
 export const runtime = "nodejs";
 export const maxDuration = 100;
@@ -35,10 +36,11 @@ export async function POST(request: Request) {
       model: TRANSCRIPTION_MODEL,
       file: new File([audio], `voice-note.${extension}`, { type }),
     });
-    console.info("Model usage", { step: "transcribe", model: TRANSCRIPTION_MODEL, usage: result.usage });
+    const usage = toUsageRecord("transcribe", TRANSCRIPTION_MODEL, result.usage);
+    console.info("Model usage", { step: "transcribe", model: TRANSCRIPTION_MODEL, usage });
     if (!result.text?.trim()) return jsonError("No speech was found in the voice note.", 422);
     if (result.text.length > MAX_STORY_CHARACTERS) return jsonError("Use a shorter voice note.", 422);
-    return Response.json({ text: result.text });
+    return Response.json({ text: result.text, usage });
   } catch (error) {
     return modelError(error, "transcribe");
   }
