@@ -1,73 +1,85 @@
 # Current status
 
-**Last updated:** 2026-11-27, during Phase 4 (live integration and end-to-end verification). Update this file after every major phase.
+**Last updated:** 2026-11-27, after live integration and end-to-end verification. Checkpoint commit `2a4621b` on branch `initial-start` (not pushed). Update this file after every major phase.
 
-Verification levels used below: **live-API** (real OpenAI call observed), **unit-tested** (`npm test`), **code-level** (read in the code, not run), **browser-tested** (driven in a real browser).
+Verification levels: **live-API** (real OpenAI call observed) · **browser (real AI)** (driven in Chrome against real model responses) · **browser (UI, AI mocked)** (driven in Chrome with `/api/story/*` mocked) · **unit-tested** (`npm test`) · **code-level** (read in the code, not run).
 
 ## Phases
 
 | Phase | State |
 |---|---|
 | Phase 1 — format registry, composable prompts | Done |
-| Phase 2 — adaptive one-question interview | Done (backend). The Studio UI does not support editing earlier answers — see bugs. |
-| Phase 3 — PostgreSQL persistence | Built, then removed at the user's request (D-008) |
-| Cleanup audit | Done — legacy UI and dead exports removed |
-| Agent workspace (this documentation) | Done |
-| Phase 4 — live integration and browser E2E | **In progress** — API verified; browser journey results pending |
+| Phase 2 — adaptive one-question interview | Done (editing earlier answers is not in the UI — see below) |
+| PostgreSQL persistence | Built, then removed at the user's request (D-008) |
+| Cleanup audit | Done |
+| Agent workspace (`CLAUDE.md`, `.claude/`, `project-agent/`) | Done |
+| Live integration and end-to-end verification | Done — see results below |
 
-## Working
+## Verified working
 
 | Capability | Verified by |
 |---|---|
-| `OPENAI_API_KEY` loads on the server; account can reach both models | live-API (`GET /v1/models` → 200) |
-| Adaptive interview turn through `/api/story/plan` returns one question, note, rationale, collected items and usage | live-API (581 tokens, 8.5 s) |
-| Request validation and error messages: malformed JSON 400, invalid step/limits 400, unsupported audio 415, empty audio 400, audio > 4 MB 413 | live-API (no model call) |
+| Key loads on the server; `gpt-6.2-sol` and `gpt-transcribe` available | live-API (`GET /v1/models` → 200) |
+| New Chat asks only for a title; conversation starts | browser (real AI) |
+| One adaptive question per turn, no repeats, follow-ups reflect answers | browser (real AI), 9 interview calls, 3.7–7.2 s each |
+| Generate shot plan → Story Editor shows characters, locations, scenes, shots | browser (real AI), 75 s, 3 characters / 2 locations / 3 scenes / 20 shots |
+| Manual edits in the Story Editor persist | browser (real AI) |
+| Refine proposal; editor unchanged while pending; Discard; Apply | browser (real AI), ~51 s per refine |
+| Apply asks for confirmation if the story changed after the request; dismissing keeps the edits | browser (UI, AI mocked) |
+| Error state: a failed refine shows an alert and restores the typed text | browser (UI, mocked 502) |
+| Reload restores sessions, chat and editor content | browser (real AI) |
+| Second session isolated; rename; delete with confirm | browser (real AI) |
+| Token usage totals match the network responses exactly; budget meter | browser (real AI) |
+| Voice: fake-mic recording → transcript in the composer | browser (real AI) |
+| Settings show `gpt-6.2-sol`, `gpt-transcribe` and the token budget | browser (real AI) |
+| Mobile 390×844: Send and Record tappable, editor reachable, no horizontal overflow, drawer closes after selection | browser (UI, AI mocked) |
+| Desktop sidebar stays open after New chat, Create, select session, Settings → Back | browser (UI, AI mocked) |
+| App icon `/icon.svg` served and rendered; no favicon 404 | browser |
+| Request validation and error messages (400/413/415) | live-API (no model call) |
 | Format registry, prompt composition, interview resolver | unit-tested (20/20) |
-| New Chat asks only for a title; one question per turn; Generate shot plan; editable Story Editor; Apply/Discard with no silent apply; open/rename/delete sessions with confirm; usage view and token budget; voice transcription path; settings show models and formats | code-level |
 
-## Pending
+No console errors, page errors or unexpected navigations in the browser runs.
 
-- Browser testing of the full journey on desktop and mobile (Phase 4 run in progress).
-- Live verification of plan generation, refine and voice transcription.
+## Story-planning input flow (verified, unchanged)
 
-## Known bugs (code-level unless noted; not yet fixed)
+"Generate shot plan" sends `{step: "plan", story: <project title>, answers: <interview Q&A>}` (`studio-app.tsx:206` → `studio-agent.ts` `generatePlan`) — captured in the browser. The route passes it to the model with the short-film plan prompt.
 
-1. **Blocker for plans with dialogue.** The Studio sends the project title as `story` (`studio-app.tsx:199` → `generatePlan`). The plan route requires every dialogue line to appear verbatim in `story` (`api/story/plan/route.ts:62-65`), so a plan containing dialogue returns 502. Fixing it needs a decision on where Studio dialogue comes from (affects D-015).
-2. **Major — editing earlier interview answers is not implemented** in the Studio, although it is an MVP requirement. The only UI that supported it was in the removed legacy workflow, which was already unreachable.
-3. **Major — Apply replaces the whole plan** with the proposal's snapshot, so manual edits made after the proposal was requested, or a newer applied proposal, are overwritten.
-4. **Minor** — The composer allows 4,000-character answers, but interview answers are capped at 2,000 (`MAX_ANSWER_CHARACTERS`), so long answers get a 400.
-5. **Minor** — Model questions over 500 characters aren't truncated on the server, so the next turn fails validation.
-6. **Minor** — Text sent after the interview is complete is saved to the chat but never sent to the model.
-7. **Minor** — A disabled format gets the generic 400 message instead of "This filmmaking format isn't available yet." (live-API).
-8. **Minor** — Voice error text says "upload audio", but there is no upload UI.
-9. **Minor** — The editor lets the project title be emptied.
-10. **Cosmetic** — The sidebar's Token usage nav item never shows as active.
+- The **collected creative details are not sent** to plan generation; they are only displayed.
+- Text sent after the interview completes is not sent either.
+- The plan prompt forbids inventing dialogue, and the route only accepts dialogue copied verbatim from `story` — which is just the title. **Studio plans therefore cannot contain dialogue** (a plan that does gets a 502). Needs a product decision (affects D-015).
 
-Cleanup candidates: about 45 unused CSS selectors in `globals.css`; `/api/story/import` and the `draft` step are unused by the UI; `DiscoveryExchange` duplicates `InterviewExchange`; `onVoiceActive` is a no-op; `useTokenBudget().hydrated` is unused.
+## Known gaps and bugs
+
+1. **Decision needed — plan input.** See above: no dialogue, and collected details unused.
+2. **Missing — editing earlier interview answers** (MVP requirement). Smallest proposal, not implemented: store `answerIndex` on the user `ChatMessage` in `sendDiscovery`; add `editAnswer(index, text)` in `studio-app.tsx` that updates `answered[index]` and the message text without a model call; in `conversation-panel.tsx`, show an Edit control on user bubbles with an `answerIndex` during the discovery phase that swaps the text for a textarea (max 2,000 characters) with Save/Cancel. About 40 lines across `session.ts`, `studio-app.tsx`, `conversation-panel.tsx`.
+3. **Minor** — The composer allows 4,000-character answers, but interview answers are capped at 2,000, so long answers get a 400.
+4. **Minor** — Model questions over 500 characters aren't truncated on the server, so the next turn fails validation.
+5. **Minor** — Transcription is recorded as 0 tokens (counted as a request). Likely duration-based usage from `gpt-transcribe`; unconfirmed.
+6. **Minor** — A disabled format gets the generic 400 message instead of the format-specific one.
+7. **Minor** — Voice error text mentions "upload audio", but there is no upload UI.
+8. **Minor** — The editor lets the project title be emptied.
+9. **Cosmetic** — The sidebar's Token usage nav item never shows as active; the error alert stays until the next send.
+
+Cleanup candidates: about 45 unused CSS selectors; `/api/story/import` and the `draft` step are unused by the UI; `DiscoveryExchange` duplicates `InterviewExchange`; `onVoiceActive` is a no-op; `useTokenBudget().hydrated` is unused; `README.md` is out of date.
+
+## Fixed in this round (browser-verified)
+
+Mobile editor no longer covers Send/Record · Apply confirms before replacing edits made while a proposal was pending · desktop sidebar stays open · app icon added · SVG accessibility lint error fixed.
 
 ## API configuration
 
-- Key: valid as of 2026-11-27 (the earlier 401 is resolved).
-- Models: `gpt-6.2-sol` and `gpt-transcribe` verified available. They are the only models the project key can see.
-- Secrets: read only on the server; logs carry usage metadata only.
+Key valid as of 2026-11-27. Both model IDs verified. Secrets are read only on the server; logs carry usage metadata only. No API blockers.
 
-## Testing status
+## Validation (on commit `2a4621b`)
 
-| Check | Result (2026-11-27) |
+| Check | Result |
 |---|---|
-| `npm run lint` | Pass |
+| `npm run lint` | Pass — 29 files, 0 errors |
 | `npm run typecheck` | Pass |
-| `npm test` | Pass — 20/20 (formats, prompts, interview) |
+| `npm test` | Pass — 20/20 |
 | `npm run build` | Pass |
-| Browser E2E | Pending |
 | CI | Runs lint, typecheck and build — not `npm test` |
-
-## Repository state
-
-- Three commits (latest d9e51af). Everything since is uncommitted.
-- `README.md` still describes the removed intake flow.
-- A parallel Claude session also edited this repo on 2026-11-27 — check for concurrent work before editing.
 
 ## Next recommended task
 
-Finish Phase 4: collect the browser results, get the user's decision on bug 1, fix the verified defects, re-run all four checks, and update this file.
+Decide the plan-input question (send collected details; allow original dialogue when there is no source story) and implement editing of earlier answers. Then push the branch and add `npm test` to CI.
