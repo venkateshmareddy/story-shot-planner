@@ -2,14 +2,16 @@
 
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ExportMenu } from "@/app/export-menu";
-import { ConversationPanel } from "./conversation-panel";
+import { ConversationPanel, type UploadingKind } from "./conversation-panel";
 import { SettingsScreen, type SettingsSection } from "./settings-screen";
 import { Sidebar } from "./sidebar";
 import { StoryEditor } from "./story-editor";
+import { validateAudioFile } from "@/lib/audio";
 import { buildDecisionHistory } from "@/lib/decisions";
 import type { ResolvedInterviewTurn } from "@/lib/interview";
 import { answerFor } from "@/lib/quick-actions";
 import { MAX_SESSION_TITLE, newId, planSignature, type ChatMessage, type StorySession } from "@/lib/session";
+import { checkSourceText, needsDigest, type SourceKind, type StorySource, storyForStep } from "@/lib/source-text";
 import {
   approveFact,
   contextReadiness,
@@ -24,13 +26,14 @@ import {
   analyzeImage,
   askDirector,
   askInterview,
+  createDigest,
   directorCollected,
   generatePlan,
-  imageTypeOf,
   importDocument,
   MAX_REFERENCES,
   transcribeVoice,
 } from "@/lib/studio-agent";
+import { classifyUpload, documentExtensionOf, routeLongText, sourceNote, tooLongForChatMessage } from "@/lib/upload";
 import { useSessions } from "@/lib/use-sessions";
 import { useTokenBudget } from "@/lib/use-token-budget";
 import type { UsageRecord } from "@/lib/usage";
@@ -48,14 +51,17 @@ export function StudioApp() {
   const [busySessionId, setBusySessionId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [transcribing, setTranscribing] = useState(false);
-  const [uploading, setUploading] = useState<"document" | "image" | null>(null);
+  const [uploading, setUploading] = useState<UploadingKind | null>(null);
+  const [busyNote, setBusyNote] = useState<{ id: string; text: string } | null>(null);
   const [voiceError, setVoiceError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const activeIdRef = useRef<string | null>(store.activeId);
+  const sessionsRef = useRef<StorySession[]>(store.sessions);
   const requestIdRef = useRef(0);
   const busy = busySessionId === store.activeId;
 
   activeIdRef.current = store.activeId;
+  sessionsRef.current = store.sessions;
 
   function beginRequest(id: string) {
     const requestId = ++requestIdRef.current;
@@ -70,6 +76,14 @@ export function StudioApp() {
 
   function isActiveRequestSession(id: string) {
     return activeIdRef.current === id;
+  }
+
+  function sessionById(id: string): StorySession | undefined {
+    return sessionsRef.current.find((session) => session.id === id);
+  }
+
+  function clearBusyNote(id: string) {
+    setBusyNote((current) => (current?.id === id ? null : current));
   }
 
   // Open the sidebar by default on desktop; keep it closed (drawer) on small screens.
@@ -139,9 +153,14 @@ export function StudioApp() {
     [store, recordUsage],
   );
 
-  async function openConversation(id: string, title: string) {
+  async function openConversation(id: string, title: string, source?: StorySource) {
+    const story = storyForStep(title, source, "interview");
+    if (!story.ok) {
+      if (isActiveRequestSession(id)) setError(story.error);
+      return;
+    }
     const requestId = beginRequest(id);
-    const result = await askInterview(title, []);
+    const result = await askInterview(story.story, []);
     finishRequest(requestId);
     if (!result.ok) {
       if (isActiveRequestSession(id)) setError(result.error);
@@ -164,6 +183,12 @@ export function StudioApp() {
 
   async function sendDiscovery(session: StorySession, text: string, fromComposer = true) {
     const command = detectDiscoveryCommand(text);
+    const toPlan = command === "stop" || (session.readyToPlan && !session.pendingQuestion);
+    const story = storyForStep(session.title, session.source, toPlan ? "plan" : "interview");
+    if (!story.ok) {
+      setError(story.error);
+      return;
+    }
     if (command === "stop") {
       const stopMessage: ChatMessage = { id: newId(), role: "user", text };
       store.update(session.id, (current) => ({ ...current, messages: [...current.messages, stopMessage] }));
@@ -202,7 +227,7 @@ export function StudioApp() {
     if (fromComposer) setInput("");
     const requestId = beginRequest(session.id);
 
-    const result = await askInterview(session.title, nextAnswered, session.context);
+    const result = await askInterview(story.story, nextAnswered, session.context);
     finishRequest(requestId);
     if (!result.ok) {
       store.update(session.id, (current) => ({
@@ -273,8 +298,15 @@ export function StudioApp() {
     if (!active || busy || transcribing) return;
     const text = input.trim();
     if (!text) return;
-    if (active.phase === "discovery") void sendDiscovery(active, text.slice(0, MAX_ANSWER_CHARACTERS));
-    else void sendRefine(active, text.slice(0, MAX_CHAT_MESSAGE_CHARACTERS));
+    const limit = active.phase === "discovery" ? MAX_ANSWER_CHARACTERS : MAX_CHAT_MESSAGE_CHARACTERS;
+    if (text.length > limit) {
+      setError(
+        `This message is ${text.length.toLocaleString("en")} characters; one message can hold ${limit.toLocaleString("en")}. Shorten it before sending.`,
+      );
+      return;
+    }
+    if (active.phase === "discovery") void sendDiscovery(active, text);
+    else void sendRefine(active, text);
   }
 
   function sendDiscoveryAction(label: string) {
@@ -288,18 +320,26 @@ export function StudioApp() {
   }
 
   async function createPlan(session: StorySession, trigger?: ChatMessage, draft = "") {
-    const requestId = beginRequest(session.id);
-    const result = await generatePlan(session.title, session.answered, session.collected, session.context);
-    finishRequest(requestId);
-    if (!result.ok) {
+    const fail = (message: string) => {
       if (trigger) {
         store.update(session.id, (current) => ({
           ...current,
-          messages: current.messages.filter((message) => message.id !== trigger.id),
+          messages: current.messages.filter((item) => item.id !== trigger.id),
         }));
       }
       if (draft && isActiveRequestSession(session.id)) setInput((previous) => previous || draft);
-      if (isActiveRequestSession(session.id)) setError(result.error);
+      if (isActiveRequestSession(session.id)) setError(message);
+    };
+    const story = storyForStep(session.title, session.source, "plan");
+    if (!story.ok) {
+      fail(story.error);
+      return;
+    }
+    const requestId = beginRequest(session.id);
+    const result = await generatePlan(story.story, session.answered, session.collected, session.context);
+    finishRequest(requestId);
+    if (!result.ok) {
+      fail(result.error);
       return;
     }
     const message: ChatMessage = {
@@ -382,18 +422,94 @@ export function StudioApp() {
     });
   }
 
-  async function handleVoice(file: File) {
-    if (!active) return;
-    setTranscribing(true);
-    setVoiceError("");
-    const result = await transcribeVoice(file);
-    setTranscribing(false);
-    if (!result.ok) {
-      setVoiceError(result.error);
+  async function adoptSource(id: string, imported: StorySource) {
+    const replaced = sessionById(id)?.source?.name;
+    let source = imported;
+    let digestFailed = false;
+    const requestId = beginRequest(id);
+    store.update(id, (current) => ({ ...current, source }));
+    if (needsDigest(source)) {
+      setBusyNote({ id, text: "Making a condensed version of your long story…" });
+      const digest = await createDigest(source.name, source.text);
+      if (digest.ok) {
+        source = { ...source, digest: digest.digest };
+        recordUsage(id, digest.usage);
+      } else {
+        digestFailed = true;
+        if (isActiveRequestSession(id)) {
+          setError(`${digest.error} The story is saved, but questions can't use it until you import it again.`);
+        }
+      }
+    }
+    const note: ChatMessage = { id: newId(), role: "agent", text: sourceNote(source, { replaced, digestFailed }) };
+    store.update(id, (current) => ({ ...current, source, messages: [...current.messages, note] }));
+    const session = sessionById(id);
+    const story = storyForStep(session?.title ?? "", source, "interview");
+    if (digestFailed || !session || !story.ok) {
+      clearBusyNote(id);
+      finishRequest(requestId);
+      if (!story.ok && !digestFailed && isActiveRequestSession(id)) setError(story.error);
       return;
     }
-    recordUsage(active.id, result.usage);
-    setInput((current) => (current.trim() ? `${current.trim()} ${result.text}` : result.text));
+    setBusyNote({ id, text: "Reading your story for what's still missing…" });
+    const result = await askInterview(story.story, session.answered, session.context);
+    clearBusyNote(id);
+    finishRequest(requestId);
+    if (!result.ok) {
+      if (isActiveRequestSession(id)) setError(result.error);
+      return;
+    }
+    applyInterviewTurn(id, result.turn, result.usage, result.context);
+  }
+
+  async function placeImportedText(
+    id: string,
+    text: string,
+    origin: "document" | "transcript",
+    meta: { name: string; kind: SourceKind; characters: number; pages?: number },
+  ) {
+    const session = sessionById(id);
+    if (!session) return;
+    const phase = session.phase === "refining" && session.plan ? "refining" : "discovery";
+    const composerLimit = phase === "discovery" ? MAX_ANSWER_CHARACTERS : MAX_CHAT_MESSAGE_CHARACTERS;
+    const route = routeLongText({ chars: meta.characters, origin, phase, composerLimit });
+    if (route === "too-long-for-chat") {
+      if (isActiveRequestSession(id)) setVoiceError(tooLongForChatMessage(meta.characters));
+      return;
+    }
+    if (route === "composer") {
+      if (!isActiveRequestSession(id)) return;
+      const separator = origin === "document" ? "\n\n" : " ";
+      setInput((current) => (current.trim() ? `${current.trim()}${separator}${text}` : text));
+      return;
+    }
+    await adoptSource(id, { ...meta, text });
+  }
+
+  async function transcribeInto(file: File, name: string, mode: "mic" | "upload") {
+    if (!active) return;
+    const id = active.id;
+    if (mode === "mic") setTranscribing(true);
+    else setUploading("audio");
+    setVoiceError("");
+    const result = await transcribeVoice(file);
+    if (mode === "mic") setTranscribing(false);
+    else setUploading(null);
+    if (!result.ok) {
+      if (isActiveRequestSession(id)) setVoiceError(result.error);
+      return;
+    }
+    recordUsage(id, result.usage);
+    const checked = checkSourceText(result.text, `“${name}”`);
+    if (!checked.ok) {
+      if (isActiveRequestSession(id)) setVoiceError(checked.error);
+      return;
+    }
+    await placeImportedText(id, checked.text, "transcript", { name, kind: "audio", characters: checked.text.length });
+  }
+
+  function handleVoice(file: File) {
+    void transcribeInto(file, "Voice note", "mic");
   }
 
   async function handleImage(file: File) {
@@ -419,21 +535,39 @@ export function StudioApp() {
 
   async function handleUpload(file: File) {
     if (!active) return;
-    if (imageTypeOf(file)) {
+    const kind = classifyUpload(file);
+    if (typeof kind !== "string") {
+      setVoiceError(kind.error);
+      return;
+    }
+    if (kind === "image") {
       await handleImage(file);
       return;
     }
+    if (kind === "audio") {
+      const check = validateAudioFile(file);
+      if (!check.ok) {
+        setVoiceError(check.error);
+        return;
+      }
+      await transcribeInto(file, file.name, "upload");
+      return;
+    }
+    const id = active.id;
     setUploading("document");
     setVoiceError("");
     const result = await importDocument(file);
     setUploading(null);
     if (!result.ok) {
-      setVoiceError(result.error);
+      if (isActiveRequestSession(id)) setVoiceError(result.error);
       return;
     }
-    const limit = active.phase === "discovery" ? MAX_ANSWER_CHARACTERS : MAX_CHAT_MESSAGE_CHARACTERS;
-    const text = result.text.slice(0, limit);
-    setInput((current) => (current.trim() ? `${current.trim()}\n\n${text}` : text));
+    await placeImportedText(id, result.text, "document", {
+      name: file.name,
+      kind: documentExtensionOf(file.name) ?? "txt",
+      characters: result.characters,
+      pages: result.pages,
+    });
   }
 
   function startNewChat() {
@@ -566,6 +700,7 @@ export function StudioApp() {
                 (active.answered.length >= 1 || contextReadiness(active.context ?? EMPTY_CONTEXT).ready)
               }
               uploading={uploading}
+              busyText={busyNote?.id === active.id ? busyNote.text : undefined}
               onInput={setInput}
               onSend={send}
               onQuickAction={sendQuickAction}
@@ -577,7 +712,7 @@ export function StudioApp() {
               onVoice={handleVoice}
               onVoiceActive={() => {}}
               onUpload={handleUpload}
-              onRetry={() => void openConversation(active.id, active.title)}
+              onRetry={() => void openConversation(active.id, active.title, active.source)}
             />
             <StoryEditor
               session={active}

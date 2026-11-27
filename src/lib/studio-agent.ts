@@ -9,11 +9,16 @@ import {
 } from "@/lib/agents/types";
 import type { CollectedItem, ResolvedInterviewTurn } from "@/lib/interview";
 import {
+  checkSourceText,
+  decodeTextFile,
+  type DigestResponse,
+  MAX_DIGEST_CHARACTERS,
+} from "@/lib/source-text";
+import {
   BYTES_PER_MB,
   MAX_ANSWER_CHARACTERS,
   MAX_CHAT_HISTORY,
   MAX_CHAT_MESSAGE_CHARACTERS,
-  MAX_STORY_CHARACTERS,
   MAX_UPLOAD_MB,
   MAX_VOICE_BYTES,
 } from "@/lib/story-input";
@@ -27,7 +32,10 @@ import {
 } from "@/lib/story-context";
 import { contextFactSchema } from "@/lib/story-context-schema";
 import { MAX_DECISIONS, type ShotPlan } from "@/lib/story-planning";
+import { documentExtensionOf, imageTypeOf, UNSUPPORTED_UPLOAD } from "@/lib/upload";
 import { isUsageRecord, type UsageRecord } from "@/lib/usage";
+
+export { imageTypeOf };
 
 export type AgentResult<T> = ({ ok: true } & T) | { ok: false; error: string };
 
@@ -186,37 +194,56 @@ export async function askDirector(request: DirectorRequest): Promise<AgentResult
   };
 }
 
-export async function importDocument(file: File): Promise<AgentResult<{ text: string }>> {
-  const extension = file.name.split(".").pop()?.toLowerCase();
-  if (extension !== "txt" && extension !== "pdf") {
-    return { ok: false, error: "Choose a TXT or PDF document, or a PNG, JPG or WebP image." };
-  }
+export type ImportedDocument = { text: string; characters: number; pages?: number };
+
+export async function importDocument(file: File): Promise<AgentResult<ImportedDocument>> {
+  const extension = documentExtensionOf(file.name);
+  if (!extension) return { ok: false, error: UNSUPPORTED_UPLOAD };
   const limit = MAX_UPLOAD_MB[extension];
   if (file.size > limit * BYTES_PER_MB) {
     return { ok: false, error: `Choose a file that is ${limit} MB or smaller.` };
   }
+  if (file.size === 0) return { ok: false, error: "That file looks empty." };
+  const label = `“${file.name}”`;
   try {
-    let text: string;
-    if (extension === "pdf") {
-      const response = await fetch("/api/story/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/pdf" },
-        body: file,
-      });
-      const result = (await response.json()) as Record<string, unknown>;
-      if (!response.ok || typeof result.text !== "string") {
-        return { ok: false, error: typeof result.error === "string" ? result.error : "The file couldn’t be imported." };
-      }
-      text = result.text;
-    } else {
-      text = await file.text();
+    if (extension === "txt") {
+      const decoded = decodeTextFile(new Uint8Array(await file.arrayBuffer()));
+      if (!decoded.ok) return decoded;
+      const checked = checkSourceText(decoded.text, label);
+      if (!checked.ok) return checked;
+      return { ok: true, text: checked.text, characters: checked.text.length };
     }
-    const trimmed = text.trim();
-    if (!trimmed) return { ok: false, error: "That file looks empty." };
-    return { ok: true, text: trimmed.slice(0, MAX_STORY_CHARACTERS) };
+    const response = await fetch("/api/story/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/pdf" },
+      body: file,
+    });
+    const result = (await response.json()) as Record<string, unknown>;
+    if (!response.ok || typeof result.text !== "string") {
+      return { ok: false, error: typeof result.error === "string" ? result.error : "The file couldn’t be imported." };
+    }
+    const checked = checkSourceText(result.text, label);
+    if (!checked.ok) return checked;
+    const pages = typeof result.pages === "number" && Number.isInteger(result.pages) && result.pages > 0 ? result.pages : undefined;
+    return { ok: true, text: checked.text, characters: checked.text.length, pages };
   } catch {
     return { ok: false, error: "The file couldn’t be imported. Try again or paste the text." };
   }
+}
+
+export async function createDigest(name: string, text: string): Promise<AgentResult<DigestResponse>> {
+  const result = await postJson("/api/story/digest", { name, text });
+  if (!result.ok) return result;
+  const { data } = result;
+  if (typeof data.digest !== "string" || !data.digest.trim() || data.digest.length > MAX_DIGEST_CHARACTERS) {
+    return { ok: false, error: "The condensed version of the story came back incomplete. Import the file again." };
+  }
+  return {
+    ok: true,
+    digest: data.digest,
+    chunks: typeof data.chunks === "number" ? data.chunks : 0,
+    usage: Array.isArray(data.usage) ? data.usage.filter(isUsageRecord) : [],
+  };
 }
 
 export async function transcribeVoice(file: File): Promise<AgentResult<{ text: string } & WithUsage>> {
@@ -229,6 +256,7 @@ export async function transcribeVoice(file: File): Promise<AgentResult<{ text: s
       headers: {
         "Content-Type": "application/octet-stream",
         "X-Audio-Extension": file.name.split(".").pop()?.toLowerCase() ?? "",
+        "X-Audio-Type": file.type.replace(/[^\x20-\x7e]/g, ""),
       },
       body: file,
     });
@@ -248,12 +276,6 @@ export async function transcribeVoice(file: File): Promise<AgentResult<{ text: s
 export const MAX_REFERENCES = 6;
 const MAX_IMAGE_BYTES = 4_000_000;
 const MAX_REFERENCE_FIELD = 1_500;
-const IMAGE_TYPES: Readonly<Record<string, string>> = {
-  png: "image/png",
-  jpg: "image/jpeg",
-  jpeg: "image/jpeg",
-  webp: "image/webp",
-};
 const REFERENCE_FIELDS = [
   "id",
   "name",
@@ -266,12 +288,6 @@ const REFERENCE_FIELDS = [
   "mood",
   "shotIdeas",
 ] as const satisfies readonly (keyof ImageReference)[];
-
-export function imageTypeOf(file: File): string | null {
-  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
-  if (Object.hasOwn(IMAGE_TYPES, extension)) return IMAGE_TYPES[extension];
-  return Object.values(IMAGE_TYPES).includes(file.type) ? file.type : null;
-}
 
 function parseReference(value: unknown): ImageReference | null {
   if (!value || typeof value !== "object") return null;

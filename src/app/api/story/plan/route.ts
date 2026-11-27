@@ -6,6 +6,7 @@ import { getOpenAI, jsonError, modelError, STORY_MODEL } from "@/lib/server/open
 import { findPlanProblem } from "@/lib/server/plan-validation";
 import { readBody } from "@/lib/server/read-body";
 import { isStopRequest, MAX_INTERVIEW_TURNS, interviewTurnOutput, resolveInterviewTurn, stopTurn } from "@/lib/interview";
+import { hasStorySource } from "@/lib/source-text";
 import { EMPTY_CONTEXT, missingCategories } from "@/lib/story-context";
 import { draftOutput, planOutput, planningRequest } from "@/lib/story-planning";
 import { toUsageRecord } from "@/lib/usage";
@@ -63,7 +64,9 @@ export async function POST(request: Request) {
       const context = input.context ?? EMPTY_CONTEXT;
       const missing = missingCategories(context).map((category) => category.id);
       const { output, usage } = await generate(interviewTurnOutput, 2_000, { ...input, context, missing });
-      const resolved = resolveInterviewTurn(output, input.answered ?? [], context, MAX_INTERVIEW_TURNS);
+      const resolved = resolveInterviewTurn(output, input.answered ?? [], context, MAX_INTERVIEW_TURNS, {
+        titleOnly: !hasStorySource(input.story),
+      });
       return Response.json({ ...resolved, usage });
     }
 

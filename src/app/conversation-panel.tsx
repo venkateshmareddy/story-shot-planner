@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import { VoiceRecorder } from "./voice-recorder";
 import { type ImageReference, type Recommendation, SPECIALIST_LABELS, type SpecialistId } from "@/lib/agents/types";
+import { AUDIO_ACCEPT } from "@/lib/audio";
 import { formatReply } from "@/lib/format-reply";
 import { DISCOVERY_ACTIONS, QUICK_ACTIONS } from "@/lib/quick-actions";
 import { MAX_ANSWER_CHARACTERS, MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
@@ -10,6 +11,16 @@ import type { ChatMessage, StorySession } from "@/lib/session";
 
 const PRIORITY_LABELS: Record<Recommendation["priority"], string> = { high: "High", medium: "Medium", low: "Low" };
 const OPEN_NOTES_LIMIT = 3;
+const ATTACH_ACCEPT = `.txt,.pdf,.png,.jpg,.jpeg,.webp,${AUDIO_ACCEPT},text/plain,application/pdf,image/png,image/jpeg,image/webp`;
+const ATTACH_LABEL =
+  "Attach a story (.txt, .pdf), an audio file (.mp3, .wav, .m4a, .webm) or a reference image (.png, .jpg, .webp)";
+const UPLOADING_LABELS = {
+  document: "Reading document…",
+  image: "Studying your image…",
+  audio: "Transcribing your audio file…",
+} as const;
+
+export type UploadingKind = keyof typeof UPLOADING_LABELS;
 
 function specialistLabel(id: SpecialistId): string {
   return SPECIALIST_LABELS[id] ?? id;
@@ -234,6 +245,7 @@ export function ConversationPanel({
   voiceError,
   canGeneratePlan,
   uploading,
+  busyText,
   onInput,
   onSend,
   onQuickAction,
@@ -254,7 +266,8 @@ export function ConversationPanel({
   transcribing: boolean;
   voiceError: string;
   canGeneratePlan: boolean;
-  uploading: "document" | "image" | null;
+  uploading: UploadingKind | null;
+  busyText?: string;
   onInput: (value: string) => void;
   onSend: () => void;
   onQuickAction: (message: string) => void;
@@ -390,7 +403,7 @@ export function ConversationPanel({
         )}
         {busy && (
           <p className="muted chat-busy" role="status">
-            {discovery ? "The creative director is thinking…" : "Asking the film experts…"}
+            {busyText ?? (discovery ? "The creative director is thinking…" : "Asking the film experts…")}
           </p>
         )}
         <div ref={logEnd} />
@@ -457,15 +470,15 @@ export function ConversationPanel({
               ref={fileRef}
               className="sr-only"
               type="file"
-              accept=".txt,.pdf,.png,.jpg,.jpeg,.webp,text/plain,application/pdf,image/png,image/jpeg,image/webp"
+              accept={ATTACH_ACCEPT}
               onChange={onPickFile}
             />
             <button
               className="icon-btn"
               type="button"
-              aria-label="Attach a document (.txt, .pdf) or a reference image (.png, .jpg, .webp)"
-              title="Attach a document (.txt, .pdf) or a reference image (.png, .jpg, .webp)"
-              disabled={busy || uploading !== null}
+              aria-label={ATTACH_LABEL}
+              title={ATTACH_LABEL}
+              disabled={busy || transcribing || uploading !== null}
               onClick={() => fileRef.current?.click()}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -485,7 +498,7 @@ export function ConversationPanel({
         </div>
         {uploading && (
           <p className="muted" role="status">
-            {uploading === "image" ? "Studying your image…" : "Reading document…"}
+            {UPLOADING_LABELS[uploading]}
           </p>
         )}
         {transcribing && (

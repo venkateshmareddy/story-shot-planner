@@ -105,3 +105,11 @@ Decide the plan-input question (send collected details; allow original dialogue 
 - Specialists get structured, category-filtered StoryContext and the filmmaker's last decisions; rejected changes aren't re-proposed; combined reply adapts its length and renders as labels and bullets (D-027).
 - Validation: lint clean (56 files), typecheck clean, 158/158 tests, build OK. Verification is unit-level with mocked model output; live AI behaviour and the browser journey are not re-verified after this change.
 - Known input gaps: audio files can't be uploaded (mic recording only); imported TXT/PDF text is cut to 2,000 characters in discovery (4,000 after planning).
+
+## Update — Story source import, audio upload, title bug (2026-11-27, uncommitted)
+
+- Imported TXT/PDF and long voice notes become the story source; nothing is cut silently; long sources get a digest (D-028).
+- MP3/WAV/M4A/WebM upload with extension, MIME and byte checks; live mic unchanged.
+- Fixed: a project title was recorded as the filmmaker's decision (D-029).
+- Validation: lint clean (61 files), typecheck clean, 208/208 tests, build OK. Unit-level only — not live-API or browser verified.
+- Open: PDFs over 4 MB are rejected before the page/character limits apply; the refining-phase director doesn't receive the source; the mic isn't disabled while a reply is pending.

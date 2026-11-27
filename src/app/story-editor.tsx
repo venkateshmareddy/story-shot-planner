@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useState } from "react";
 import type { StorySession } from "@/lib/session";
+import type { StorySource } from "@/lib/source-text";
 import {
   categoryOf,
   type ContextFact,
@@ -77,6 +78,15 @@ function RemoveButton({ label, onClick }: { label: string; onClick: () => void }
   );
 }
 
+function SourceLine({ source }: { source: StorySource }) {
+  return (
+    <p className="muted editor-source">
+      Story source: {source.name} · {source.characters.toLocaleString("en")} characters
+      {source.digest ? " · condensed for questions" : ""}
+    </p>
+  );
+}
+
 export function StoryEditor({
   session,
   busy,
@@ -121,6 +131,7 @@ export function StoryEditor({
         <header className="editor-head editor-doc-head">
           <p className="muted studio-eyebrow">Your story</p>
           <h2 className="studio-title editor-doc-title">{session.title || "Untitled project"}</h2>
+          {session.source && <SourceLine source={session.source} />}
         </header>
         <DiscoveryDocument session={session} actions={contextActions} />
       </section>
@@ -134,6 +145,7 @@ export function StoryEditor({
       <header className="editor-head editor-doc-head">
         <p className="muted studio-eyebrow">Your story</p>
         <h2 className="studio-title editor-doc-title">{session.title || "Untitled project"}</h2>
+        {session.source && <SourceLine source={session.source} />}
       </header>
 
       <div className="editor-doc" key={`doc-${session.id}`}>

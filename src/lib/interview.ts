@@ -2,6 +2,7 @@ import { z } from "zod";
 import {
   type ContextFact,
   detectDiscoveryCommand,
+  factKey,
   mergeFacts,
   type StoryContext,
   toCollected,
@@ -135,19 +136,41 @@ export function stopTurn(context: StoryContext): ResolvedInterviewTurn {
   return { status: "complete", note: "", recommendation: STOP_RECOMMENDATION, context, collected: toCollected(context) };
 }
 
+const sameValue = (a: string, b: string) => a.trim().toLowerCase().replace(/\s+/g, " ") === b.trim().toLowerCase().replace(/\s+/g, " ");
+
+/**
+ * A fact is the filmmaker's only when they actually said it. Two deterministic guards:
+ * 1. Title-only first turn (no answers, no imported story): nothing has been said yet, so every fact is an AI guess.
+ * 2. The model can't promote its own unchanged earlier suggestion to "user" — only the filmmaker's Approve does that.
+ */
+export function attributeFacts(
+  facts: InterviewTurnOutput["facts"],
+  answered: InterviewExchange[],
+  context: StoryContext,
+  titleOnly: boolean,
+): ContextFact[] {
+  const nothingSaid = titleOnly && answered.length === 0;
+  return facts.map((fact) => {
+    const label = clip(fact.label, 80);
+    const value = clip(fact.value, 600);
+    let source = fact.source;
+    if (source === "user" && nothingSaid) source = "ai";
+    if (source === "user") {
+      const existing = context.facts.find((item) => factKey(item) === factKey({ category: fact.category, label }));
+      if (existing && existing.source === "ai" && !existing.approved && sameValue(existing.value, value)) source = "ai";
+    }
+    return { category: fact.category, label, value, source, approved: source === "user" };
+  });
+}
+
 export function resolveInterviewTurn(
   output: InterviewTurnOutput,
   answered: InterviewExchange[],
   context: StoryContext,
   maxTurns: number = MAX_INTERVIEW_TURNS,
+  options: { titleOnly?: boolean } = {},
 ): ResolvedInterviewTurn {
-  const updates: ContextFact[] = output.facts.map((fact) => ({
-    category: fact.category,
-    label: clip(fact.label, 80),
-    value: clip(fact.value, 600),
-    source: fact.source,
-    approved: fact.source === "user",
-  }));
+  const updates = attributeFacts(output.facts, answered, context, options.titleOnly ?? false);
   const merged = withUnresolved(
     mergeFacts(context, updates),
     output.unresolved.map((item) => clip(item, 300)),
