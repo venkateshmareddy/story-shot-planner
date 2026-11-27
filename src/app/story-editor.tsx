@@ -79,6 +79,9 @@ function RemoveButton({ label, onClick }: { label: string; onClick: () => void }
 }
 
 function SourceLine({ source }: { source: StorySource }) {
+  if (source.kind === "suggestion") {
+    return <p className="muted editor-source">Starting idea (AI suggestion): {source.name}</p>;
+  }
   return (
     <p className="muted editor-source">
       Story source: {source.name} · {source.characters.toLocaleString("en")} characters

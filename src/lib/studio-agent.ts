@@ -7,7 +7,18 @@ import {
   SPECIALIST_LABELS,
   type SpecialistId,
 } from "@/lib/agents/types";
+import {
+  type IdeasRequest,
+  type IdeasResponse,
+  MAX_AVOID,
+  MAX_COMBINE,
+  MAX_CONCEPTS,
+  MAX_IDEA_QUESTIONS,
+  type StoryConcept,
+} from "@/lib/ideas";
+import { IDEA_INPUT_LIMITS } from "@/lib/ideas-flow";
 import type { CollectedItem, ResolvedInterviewTurn } from "@/lib/interview";
+import { newId } from "@/lib/session";
 import {
   checkSourceText,
   decodeTextFile,
@@ -327,4 +338,85 @@ export async function analyzeImage(file: File): Promise<AgentResult<ImageAnalysi
   } catch {
     return { ok: false, error: "The image couldn’t be read. Try again." };
   }
+}
+
+const MAX_CONCEPT_FIELD = 1_500;
+const MAX_IDEA_QUESTION = 500;
+const MAX_IDEA_OPTION = 200;
+const MAX_IDEA_OPTIONS = 6;
+const CONCEPT_FIELDS = [
+  "title",
+  "genre",
+  "premise",
+  "mainCharacter",
+  "conflict",
+  "emotionalHook",
+  "plotDirection",
+  "cinematicAppeal",
+] as const satisfies readonly (keyof StoryConcept)[];
+const IDEAS_INCOMPLETE = "The story ideas came back incomplete. Try again.";
+
+// Server ids may repeat across responses; cards are keyed and replaced by id, so each gets a fresh one.
+function parseConcept(value: unknown): StoryConcept | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (!CONCEPT_FIELDS.every((field) => typeof record[field] === "string")) return null;
+  const fields = Object.fromEntries(
+    CONCEPT_FIELDS.map((field) => [field, (record[field] as string).trim().slice(0, MAX_CONCEPT_FIELD)]),
+  ) as Omit<StoryConcept, "id">;
+  if (!fields.title || !fields.premise) return null;
+  return { id: newId(), ...fields };
+}
+
+function parseIdeaQuestion(value: unknown): IdeasResponse["question"] | undefined {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (typeof record.text !== "string" || !record.text.trim()) return undefined;
+  return {
+    text: record.text.trim().slice(0, MAX_IDEA_QUESTION),
+    options: stringList(record.options)
+      .map((option) => option.trim().slice(0, MAX_IDEA_OPTION))
+      .slice(0, MAX_IDEA_OPTIONS),
+  };
+}
+
+function boundedIdeasRequest(request: IdeasRequest): IdeasRequest {
+  const limit = IDEA_INPUT_LIMITS;
+  switch (request.mode) {
+    case "generate":
+    case "another":
+      return {
+        mode: request.mode,
+        direction: request.direction.slice(0, limit.direction),
+        answers: request.answers.slice(-MAX_IDEA_QUESTIONS).map((item) => ({
+          question: item.question.slice(0, limit.question),
+          answer: item.answer.slice(0, limit.answer),
+        })),
+        avoid: request.avoid.slice(-MAX_AVOID),
+      };
+    case "refine":
+      return { mode: "refine", concept: request.concept, change: request.change.slice(0, limit.change) };
+    case "combine":
+      return { mode: "combine", concepts: request.concepts.slice(0, MAX_COMBINE), note: request.note.slice(0, limit.note) };
+  }
+}
+
+export async function askIdeas(request: IdeasRequest): Promise<AgentResult<{ response: IdeasResponse }>> {
+  const result = await postJson("/api/story/ideas", boundedIdeasRequest(request));
+  if (!result.ok) return result;
+  const { data } = result;
+  const parsedQuestion = parseIdeaQuestion(data.question);
+  if (parsedQuestion === undefined || !Array.isArray(data.concepts) || !isUsageRecord(data.usage)) {
+    return { ok: false, error: IDEAS_INCOMPLETE };
+  }
+  // A question is only meaningful while the generate step may still ask one; otherwise concepts are required.
+  const canAsk = request.mode === "generate" && request.answers.length < MAX_IDEA_QUESTIONS;
+  const question = canAsk ? parsedQuestion : null;
+  const concepts = data.concepts
+    .map(parseConcept)
+    .filter((concept): concept is StoryConcept => concept !== null)
+    .slice(0, MAX_CONCEPTS);
+  if (!question && concepts.length === 0) return { ok: false, error: IDEAS_INCOMPLETE };
+  return { ok: true, response: { question, concepts: question ? [] : concepts, usage: data.usage } };
 }

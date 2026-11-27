@@ -11,7 +11,8 @@ export type UsageStep =
   | "editing-director"
   | "continuity-reviewer"
   | "image-analysis"
-  | "digest";
+  | "digest"
+  | "ideas";
 
 export type UsageRecord = {
   step: UsageStep;

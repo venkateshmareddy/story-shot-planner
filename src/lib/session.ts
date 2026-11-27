@@ -130,7 +130,7 @@ export function isStorySource(value: unknown): value is StorySource {
   const record = value as Record<string, unknown>;
   return (
     typeof record.name === "string" &&
-    (record.kind === "txt" || record.kind === "pdf" || record.kind === "audio") &&
+    (record.kind === "txt" || record.kind === "pdf" || record.kind === "audio" || record.kind === "suggestion") &&
     typeof record.text === "string" &&
     typeof record.characters === "number" &&
     Number.isFinite(record.characters) &&

@@ -6,8 +6,11 @@ import { ConversationPanel, type UploadingKind } from "./conversation-panel";
 import { SettingsScreen, type SettingsSection } from "./settings-screen";
 import { Sidebar } from "./sidebar";
 import { StoryEditor } from "./story-editor";
+import { StoryIdeas } from "./story-ideas";
 import { validateAudioFile } from "@/lib/audio";
 import { buildDecisionHistory } from "@/lib/decisions";
+import { conceptProjectTitle, conceptSource, seedContextFromConcept, type StoryConcept } from "@/lib/ideas";
+import { sessionFromConcept } from "@/lib/ideas-flow";
 import type { ResolvedInterviewTurn } from "@/lib/interview";
 import { answerFor } from "@/lib/quick-actions";
 import { MAX_SESSION_TITLE, newId, planSignature, type ChatMessage, type StorySession } from "@/lib/session";
@@ -46,6 +49,7 @@ export function StudioApp() {
   const [view, setView] = useState<"chat" | "settings">("chat");
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("usage");
   const [creating, setCreating] = useState(false);
+  const [exploring, setExploring] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [input, setInput] = useState("");
   const [busySessionId, setBusySessionId] = useState<string | null>(null);
@@ -58,6 +62,8 @@ export function StudioApp() {
   const activeIdRef = useRef<string | null>(store.activeId);
   const sessionsRef = useRef<StorySession[]>(store.sessions);
   const requestIdRef = useRef(0);
+  const exploreButtonRef = useRef<HTMLButtonElement>(null);
+  const refocusExploreRef = useRef(false);
   const busy = busySessionId === store.activeId;
 
   activeIdRef.current = store.activeId;
@@ -153,14 +159,20 @@ export function StudioApp() {
     [store, recordUsage],
   );
 
-  async function openConversation(id: string, title: string, source?: StorySource) {
+  useEffect(() => {
+    if (exploring || !refocusExploreRef.current) return;
+    refocusExploreRef.current = false;
+    exploreButtonRef.current?.focus();
+  }, [exploring]);
+
+  async function openConversation(id: string, title: string, source?: StorySource, context?: StoryContext) {
     const story = storyForStep(title, source, "interview");
     if (!story.ok) {
       if (isActiveRequestSession(id)) setError(story.error);
       return;
     }
     const requestId = beginRequest(id);
-    const result = await askInterview(story.story, []);
+    const result = await askInterview(story.story, [], context);
     finishRequest(requestId);
     if (!result.ok) {
       if (isActiveRequestSession(id)) setError(result.error);
@@ -179,6 +191,23 @@ export function StudioApp() {
     setView("chat");
     closeDrawer();
     void openConversation(id, title);
+  }
+
+  function closeIdeas() {
+    refocusExploreRef.current = true;
+    setExploring(false);
+  }
+
+  function developConcept(concept: StoryConcept, usage: UsageRecord[]) {
+    const title = conceptProjectTitle(concept);
+    const id = store.create(title);
+    store.update(id, (session) => sessionFromConcept(session, concept, usage));
+    setExploring(false);
+    setCreating(false);
+    setTitleDraft("");
+    setView("chat");
+    closeDrawer();
+    void openConversation(id, title, conceptSource(concept), seedContextFromConcept(concept));
   }
 
   async function sendDiscovery(session: StorySession, text: string, fromComposer = true) {
@@ -572,6 +601,7 @@ export function StudioApp() {
 
   function startNewChat() {
     setCreating(true);
+    setExploring(false);
     setTitleDraft("");
     setView("chat");
     setError("");
@@ -581,6 +611,7 @@ export function StudioApp() {
   function selectSession(id: string) {
     store.select(id);
     setCreating(false);
+    setExploring(false);
     setView("chat");
     closeDrawer();
   }
@@ -660,6 +691,8 @@ export function StudioApp() {
 
         {!store.hydrated ? (
           <p className="muted app-loading">Loading your sessions…</p>
+        ) : showTitlePrompt && exploring ? (
+          <StoryIdeas onDevelop={developConcept} onBack={closeIdeas} />
         ) : showTitlePrompt ? (
           <section className="new-chat" aria-labelledby="new-chat-title">
             <h2 className="studio-title" id="new-chat-title">
@@ -685,6 +718,20 @@ export function StudioApp() {
             <p className="muted new-chat-hint">
               That’s all we need to start. We’ll ask about the rest, one question at a time.
             </p>
+            <div className="new-chat-ideas">
+              <h3 className="new-chat-ideas-title">Don’t have a story idea yet?</h3>
+              <p className="muted new-chat-ideas-text">
+                Let AI help you discover your next story through creative ideas, premises and plot possibilities.
+              </p>
+              <button
+                ref={exploreButtonRef}
+                className="button secondary new-chat-ideas-button"
+                type="button"
+                onClick={() => setExploring(true)}
+              >
+                <span aria-hidden="true">✨</span> Explore story suggestions
+              </button>
+            </div>
           </section>
         ) : active ? (
           <div className="workspace-grid">
@@ -712,7 +759,7 @@ export function StudioApp() {
               onVoice={handleVoice}
               onVoiceActive={() => {}}
               onUpload={handleUpload}
-              onRetry={() => void openConversation(active.id, active.title, active.source)}
+              onRetry={() => void openConversation(active.id, active.title, active.source, active.context)}
             />
             <StoryEditor
               session={active}

@@ -113,3 +113,9 @@ Decide the plan-input question (send collected details; allow original dialogue 
 - Fixed: a project title was recorded as the filmmaker's decision (D-029).
 - Validation: lint clean (61 files), typecheck clean, 208/208 tests, build OK. Unit-level only — not live-API or browser verified.
 - Open: PDFs over 4 MB are rejected before the page/character limits apply; the refining-phase director doesn't receive the source; the mic isn't disabled while a reply is pending.
+
+## Update — AI story suggestions (2026-11-27, uncommitted)
+
+- Home page "Don't have a story idea yet?" → explorer (opening question, directions, Surprise me, ≤2 AI follow-ups, 3–5 concept cards with Develop / Refine / Try a different one / Combine / Not for me) → "Develop this idea" seeds a project with unapproved AI suggestions and starts discovery (D-030).
+- `openConversation` and conversation retry now pass the StoryContext (previously the first turn could wipe seeded facts).
+- Validation: lint clean (66 files), typecheck clean, 234/234 tests, build OK. Unit-level only — not live-API or browser verified.

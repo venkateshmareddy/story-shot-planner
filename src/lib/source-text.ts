@@ -13,7 +13,11 @@ export const MAX_DIGEST_CHUNKS = 8;
 /** The assembled digest stays below the interview inline limit. */
 export const MAX_DIGEST_CHARACTERS = 22_000;
 
-export type SourceKind = "txt" | "pdf" | "audio";
+/** "suggestion" = an AI story concept the filmmaker chose to develop: an AI suggestion, not their own story. */
+export type SourceKind = "txt" | "pdf" | "audio" | "suggestion";
+
+/** Heading for an AI-suggested starting concept. Deliberately not STORY_SOURCE_MARKER, so its facts stay AI suggestions. */
+export const SUGGESTED_CONCEPT_MARKER = "AI-suggested starting concept (not yet approved by the filmmaker):";
 
 export type StorySource = {
   name: string;
@@ -141,6 +145,9 @@ export function storyForStep(title: string, source: StorySource | undefined, ste
   const heading = title.trim();
   if (!source) return { ok: true, story: heading, condensed: false };
   const limit = step === "interview" ? SOURCE_INLINE_LIMIT : PLAN_SOURCE_LIMIT;
+  if (source.kind === "suggestion") {
+    return { ok: true, story: `${heading}\n\n${SUGGESTED_CONCEPT_MARKER}\n${source.text}`.slice(0, limit), condensed: false };
+  }
   const intro = `${heading}\n\n${STORY_SOURCE_MARKER}${source.name}):\n`;
   if (source.text.length + intro.length <= limit) return { ok: true, story: `${intro}${source.text}`, condensed: false };
   if (source.digest) {
