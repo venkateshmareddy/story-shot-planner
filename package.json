@@ -1,0 +1,28 @@
+{
+  "name": "story-shot-planner",
+  "version": "0.1.0",
+  "private": true,
+  "engines": {
+    "node": "24.x"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "biome lint src",
+    "typecheck": "next typegen && tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "16.4.6",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "unpdf": "2.2.3"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.9",
+    "@types/node": "24.19.4",
+    "@types/react": "19.3.3",
+    "@types/react-dom": "19.3.0",
+    "typescript": "5.9.3"
+  }
+}
