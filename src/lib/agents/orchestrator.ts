@@ -1,13 +1,14 @@
 import type { z } from "zod";
 import type { RefineResult } from "@/lib/server/refine";
 import { PLAIN_LANGUAGE, SOURCE_RULES } from "@/lib/server/prompts";
-import type { RefineRequest } from "@/lib/story-planning";
+import type { RefineRequest, ShotPlan } from "@/lib/story-planning";
 import type { UsageRecord, UsageStep } from "@/lib/usage";
 import { cinematographyDirector } from "./cinematography-director";
 import { continuityReviewer } from "./continuity-reviewer";
 import { editingDirector } from "./editing-director";
 import { mergeEdits, sanitizeEdits, type ValidEdit } from "./merge";
 import { domainScore, selectSpecialists } from "./router";
+import { findTargetScenes, isSceneStructureEdit } from "./scope";
 import { anySpecialistOutput, type SpecialistOutput, synthesisOutput } from "./schemas";
 import { clip, type SpecialistDefinition } from "./shared";
 import { soundDirector } from "./sound-director";
@@ -143,7 +144,7 @@ async function consult(
     message: input.message,
     recent: input.messages.slice(-4).map(({ role, text }) => ({ role, text: clip(text, 300) })),
     approved: approvedContext(input, definition.id),
-    plan: definition.buildContext(input.plan),
+    plan: definition.buildContext(input.plan, input.references),
   };
   const { output, usage } = await untilAborted(
     deps.callModel({
@@ -235,9 +236,82 @@ async function synthesize(
   }
 }
 
+function sceneCode(index: number) {
+  return `S${String(index + 1).padStart(2, "0")}`;
+}
+
+function scopedMessage(message: string, targets: number[]) {
+  const scenes = targets.map((index) => `Scene ${index + 1}`).join(", ");
+  return `${message}\n\n[Scope: this plan holds only ${scenes} of the film, in that order. Revise only these scenes and return exactly ${targets.length} scene(s) in the same order. Refer to scenes and shots by their film numbers (${sceneCode(targets[0])} is the first scene here).]`;
+}
+
+function appendNewByName<T extends { name: string }>(existing: T[], incoming: readonly T[]) {
+  const known = new Set(existing.map(({ name }) => name.trim().toLowerCase()));
+  for (const item of incoming) {
+    const key = item.name.trim().toLowerCase();
+    if (!key || known.has(key)) continue;
+    known.add(key);
+    existing.push(structuredClone(item));
+  }
+}
+
+/** null when the scoped result doesn't map 1:1 onto the targeted scenes. */
+function spliceScenes(full: ShotPlan, targets: number[], scoped: ShotPlan): ShotPlan | null {
+  if (scoped.scenes.length !== targets.length) return null;
+  const plan = structuredClone(full);
+  targets.forEach((sceneIndex, position) => {
+    plan.scenes[sceneIndex] = structuredClone(scoped.scenes[position]);
+  });
+  appendNewByName(plan.characters, scoped.characters);
+  appendNewByName(plan.locations, scoped.locations);
+  return plan;
+}
+
+function refineResponse(
+  result: { reply: string; changeSummary: string[] },
+  plan: ShotPlan,
+  usage: UsageRecord[],
+): DirectorResponse {
+  return {
+    mode: "refine",
+    reply: result.reply,
+    specialists: [],
+    failed: [],
+    recommendations: [],
+    conflicts: [],
+    changeSummary: result.changeSummary,
+    plan,
+    usage,
+  };
+}
+
+/**
+ * General plan edit. A request naming specific scenes sends only those scenes (plus film-level context) and splices
+ * the result back, so untargeted scenes stay byte-identical. One call; a second full refine only if the scoped
+ * result's scene count doesn't match.
+ */
+async function refineFallback(input: DirectorRequest, deps: DirectorDeps): Promise<DirectorResponse> {
+  const { plan, messages, message } = input;
+  const usage: UsageRecord[] = [];
+  const targets = isSceneStructureEdit(message) ? [] : findTargetScenes(message, plan.scenes.length);
+  if (targets.length && targets.length < plan.scenes.length) {
+    const scoped = await deps.refine({
+      plan: { ...plan, scenes: targets.map((index) => plan.scenes[index]) },
+      messages,
+      message: scopedMessage(message, targets),
+    });
+    usage.push(scoped.usage);
+    const spliced = spliceScenes(plan, targets, scoped.plan);
+    if (spliced) return refineResponse(scoped, spliced, usage);
+  }
+  const refined = await deps.refine({ plan, messages, message });
+  usage.push(refined.usage);
+  return refineResponse(refined, refined.plan, usage);
+}
+
 /**
  * Multi-agent Creative Director. Bounded: at most 5 specialist calls in parallel plus 1 synthesis call,
- * no recursion, no retries. Specialists only propose; the merged plan is a copy awaiting the filmmaker's Apply.
+ * or 1 refine call (2 only when a scene-scoped refine can't be spliced back), no recursion. Specialists only propose; the merged plan is a copy awaiting the filmmaker's Apply.
  */
 export async function runDirector(
   input: DirectorRequest,
@@ -245,20 +319,7 @@ export async function runDirector(
   options: DirectorOptions = {},
 ): Promise<DirectorResponse> {
   const selected = selectSpecialists(input.message).slice(0, SPECIALIST_IDS.length);
-  if (!selected.length) {
-    const refined = await deps.refine({ plan: input.plan, messages: input.messages, message: input.message });
-    return {
-      mode: "refine",
-      reply: refined.reply,
-      specialists: [],
-      failed: [],
-      recommendations: [],
-      conflicts: [],
-      changeSummary: refined.changeSummary,
-      plan: refined.plan,
-      usage: [refined.usage],
-    };
-  }
+  if (!selected.length) return refineFallback(input, deps);
 
   const settled = await Promise.allSettled(
     selected.map((id) => consult(SPECIALISTS[id], input, deps, options)),

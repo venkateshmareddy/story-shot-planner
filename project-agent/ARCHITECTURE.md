@@ -13,7 +13,8 @@ StudioApp ─ useSessions()    ⇄ localStorage         POST /api/story/plan    
    └─ studio-agent.ts ── fetch ──────────────────▶  POST /api/story/director    orchestrator → specialists (src/lib/agents)
                                                     POST /api/story/transcribe
                                                     POST /api/story/refine      (fallback used by the director)
-                                                    POST /api/story/import      (not called by the UI)
+                                                    POST /api/story/import      document attachment
+                                                    POST /api/story/image       reference-image analysis
                                                          │
                                   composeInstructions() + zodTextFormat ──▶ OpenAI (gpt-6.2-sol, gpt-transcribe)
 ```
@@ -32,6 +33,7 @@ StudioApp ─ useSessions()    ⇄ localStorage         POST /api/story/plan    
 | `settings-screen.tsx` | Settings shell with sections `usage` / `preferences` / `data` and "Back to app" |
 | `settings-view.tsx` | `PreferencesSection` (token budget, formats, models) and `DataSection` (session count, Delete all sessions) |
 | `usage-view.tsx` | Model IDs, request/input/output/total token totals, budget meter (warns at 75%, flags at 100%), per-session table |
+| `export-menu.tsx` | Draft and confirmed-final PDF/DOCX blueprint exports. |
 
 ## User flow as implemented
 
@@ -41,11 +43,12 @@ StudioApp ─ useSessions()    ⇄ localStorage         POST /api/story/plan    
 4. **Story Editor.** The project title is always editable. Before a plan exists it shows a read-only "Discovered so far" list. After planning, editable fields are: logline, intent; characters (name, role, look, personality, voice); locations (name, description); scene titles; shots (action, seconds, framing, camera, characters, location, emotion, sound) and their dialogue (speaker, line, delivery). Every list supports add and remove. Review notes are read-only. Scene and shot IDs (`S01`, `S01_SH01`) come from list position.
 5. **Creative Director.** Each chat message in the `refining` phase goes to `askDirector` → `/api/story/director` (see the multi-agent section). The reply is one agent message carrying the specialists consulted, their recommendations and any disagreements. If the response includes a plan, it is a pending proposal: Apply replaces the plan (with a confirmation if the story changed since the request), Discard marks it rejected. Advice-only replies have no Apply/Discard. Nothing is applied without approval.
 6. **Settings and usage** as listed in the components table.
-7. **Voice.** Recording → `transcribeVoice(file)` → `/api/story/transcribe`; the transcript is appended to the composer (not sent automatically) and its usage is recorded.
+7. **Voice and references.** Recording → `transcribeVoice(file)` → `/api/story/transcribe`; the transcript is appended to the composer. PNG, JPEG and WebP references are analysed server-side and their text analysis reaches the Camera specialist; raw image bytes are not stored.
+8. **Blueprint export.** Draft PDF/DOCX exports work at any stage. Final exports require a plan with a shot and an explicit confirmation.
 
 ## State and persistence
 
-- `StorySession` (`src/lib/session.ts`): `id, title, createdAt, updatedAt, phase ('discovery' | 'refining'), readyToPlan, pendingQuestion, answered[{question, answer}], collected[{label, detail}], messages[ChatMessage], plan | null, usage[UsageRecord]`.
+- `StorySession` (`src/lib/session.ts`): `id, title, createdAt, updatedAt, phase ('discovery' | 'refining'), readyToPlan, pendingQuestion, answered[{question, answer}], collected[{label, detail}], messages[ChatMessage], plan | null, usage[UsageRecord], context?, references?`.
 - `ChatMessage`: `id, role, text, suggestion?, changeSummary?, proposedPlan?, status? ('pending' | 'accepted' | 'rejected')`.
 - Sessions: `localStorage["story-studio.sessions.v1"]` = `{version: 1, activeId, sessions}`. Saves are debounced by 400 ms; `proposedPlan` is dropped from resolved messages before saving. A version mismatch or invalid JSON loads an empty list. Load and save failures set `storageWarning`, shown as an alert.
 - Token budget: `localStorage["story-studio.tokenBudget.v1"]`, default 100,000; storage failures are ignored.

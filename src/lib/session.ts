@@ -1,7 +1,9 @@
-import type { Recommendation, SpecialistId } from "@/lib/agents/types";
+import type { ImageReference, Recommendation, SpecialistId } from "@/lib/agents/types";
 import type { CollectedItem } from "@/lib/interview";
-import type { ShotPlan } from "@/lib/story-planning";
-import type { UsageRecord } from "@/lib/usage";
+import { storyContextSchema } from "@/lib/story-context-schema";
+import type { StoryContext } from "@/lib/story-context";
+import { planOutput, type ShotPlan } from "@/lib/story-planning";
+import { isUsageRecord, type UsageRecord } from "@/lib/usage";
 
 export const SESSIONS_STORAGE_KEY = "story-studio.sessions.v1";
 export const SESSIONS_STORAGE_VERSION = 1 as const;
@@ -32,6 +34,8 @@ export type ChatMessage = {
   failedSpecialists?: SpecialistId[];
   recommendations?: Recommendation[];
   conflicts?: string[];
+  /** On an agent message: the analysis of a reference image the filmmaker uploaded. */
+  reference?: ImageReference;
 };
 
 export function planSignature(plan: ShotPlan | null): string {
@@ -55,6 +59,10 @@ export type StorySession = {
   messages: ChatMessage[];
   plan: ShotPlan | null;
   usage: UsageRecord[];
+  /** Analysed reference images (text only). Optional so sessions saved earlier still load. */
+  references?: ImageReference[];
+  /** 20-category StoryContext: user facts, AI suggestions, approvals, open questions. */
+  context?: StoryContext;
 };
 
 export type PersistedSessions = {
@@ -120,9 +128,43 @@ function isStorySession(value: unknown): value is StorySession {
   return (
     typeof record.id === "string" &&
     typeof record.title === "string" &&
+    typeof record.createdAt === "number" &&
+    Number.isFinite(record.createdAt) &&
+    typeof record.updatedAt === "number" &&
+    Number.isFinite(record.updatedAt) &&
+    (record.phase === "discovery" || record.phase === "refining") &&
+    typeof record.readyToPlan === "boolean" &&
+    (record.pendingQuestion === null || typeof record.pendingQuestion === "string") &&
     Array.isArray(record.messages) &&
+    record.messages.every(
+      (message) =>
+        Boolean(message) &&
+        typeof message === "object" &&
+        typeof (message as Record<string, unknown>).id === "string" &&
+        (message as Record<string, unknown>).role !== undefined &&
+        ["user", "agent"].includes((message as Record<string, unknown>).role as string) &&
+        typeof (message as Record<string, unknown>).text === "string",
+    ) &&
     Array.isArray(record.answered) &&
-    Array.isArray(record.usage)
+    record.answered.every(
+      (answer) =>
+        Boolean(answer) &&
+        typeof answer === "object" &&
+        typeof (answer as Record<string, unknown>).question === "string" &&
+        typeof (answer as Record<string, unknown>).answer === "string",
+    ) &&
+    Array.isArray(record.collected) &&
+    record.collected.every(
+      (item) =>
+        Boolean(item) &&
+        typeof item === "object" &&
+        typeof (item as Record<string, unknown>).label === "string" &&
+        typeof (item as Record<string, unknown>).detail === "string",
+    ) &&
+    (record.plan === null || planOutput.safeParse(record.plan).success) &&
+    Array.isArray(record.usage) &&
+    record.usage.every(isUsageRecord) &&
+    (record.context === undefined || storyContextSchema.safeParse(record.context).success)
   );
 }
 

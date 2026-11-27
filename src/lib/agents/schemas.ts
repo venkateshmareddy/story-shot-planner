@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { collectedItem, MAX_INTERVIEW_TURNS } from "@/lib/interview";
 import { interviewExchange, refineRequest } from "@/lib/story-planning";
+import type { ImageReference } from "./types";
 
 export const EDIT_FIELDS = [
   "logline",
@@ -57,7 +58,27 @@ export const synthesisOutput = z.object({
   conflicts: z.array(z.string()),
 });
 
+export const IMAGE_REFERENCE_TEXT_MAX = 1_200;
+export const IMAGE_REFERENCE_NAME_MAX = 120;
+export const MAX_IMAGE_REFERENCES = 6;
+
+const referenceText = z.string().max(IMAGE_REFERENCE_TEXT_MAX);
+
+export const imageReference = z.object({
+  id: z.string().min(1).max(100),
+  name: z.string().max(IMAGE_REFERENCE_NAME_MAX),
+  summary: referenceText,
+  composition: referenceText,
+  lighting: referenceText,
+  cameraAngle: referenceText,
+  colour: referenceText,
+  environment: referenceText,
+  mood: referenceText,
+  shotIdeas: referenceText,
+}) satisfies z.ZodType<ImageReference>;
+
 export const directorRequest = refineRequest.pick({ plan: true, messages: true, message: true }).extend({
   answers: z.array(interviewExchange).max(MAX_INTERVIEW_TURNS).optional(),
   collected: z.array(collectedItem).max(40).optional(),
+  references: z.array(imageReference).max(MAX_IMAGE_REFERENCES).optional(),
 });

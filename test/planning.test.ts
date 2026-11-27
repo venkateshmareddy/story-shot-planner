@@ -53,8 +53,8 @@ test("planningRequest accepts a plan request with collected details and edited a
   }
 });
 
-test("planningRequest rejects more than 40 collected details", () => {
-  const collected = Array.from({ length: 41 }, (_, i) => ({ label: `L${i}`, detail: `D${i}` }));
+test("planningRequest rejects more than 80 collected details", () => {
+  const collected = Array.from({ length: 81 }, (_, i) => ({ label: `L${i}`, detail: `D${i}` }));
   assert.equal(planningRequest.safeParse({ step: "plan", story: "The Last Keeper", answers, collected }).success, false);
 });
 

@@ -5,7 +5,8 @@ import { composeInstructions } from "@/lib/server/prompts";
 import { getOpenAI, jsonError, modelError, STORY_MODEL } from "@/lib/server/openai";
 import { findPlanProblem } from "@/lib/server/plan-validation";
 import { readBody } from "@/lib/server/read-body";
-import { MAX_INTERVIEW_TURNS, interviewTurnOutput, resolveInterviewTurn } from "@/lib/interview";
+import { isStopRequest, MAX_INTERVIEW_TURNS, interviewTurnOutput, resolveInterviewTurn, stopTurn } from "@/lib/interview";
+import { EMPTY_CONTEXT, missingCategories } from "@/lib/story-context";
 import { draftOutput, planOutput, planningRequest } from "@/lib/story-planning";
 import { toUsageRecord } from "@/lib/usage";
 
@@ -25,22 +26,27 @@ export async function POST(request: Request) {
   const parsed = planningRequest.safeParse(body);
   if (!parsed.success) return jsonError("Provide a story and valid inputs for this step.", 400);
 
+  const input = parsed.data;
+  if (input.step === "interview" && isStopRequest(input.answered ?? [])) {
+    return Response.json(stopTurn(input.context ?? EMPTY_CONTEXT));
+  }
+
   const client = getOpenAI();
   if (!client) return jsonError("Add OPENAI_API_KEY to the server’s .env file to use AI planning.", 503);
 
-  const input = parsed.data;
   const format = input.format ?? DEFAULT_FORMAT;
-  const generate = async <T extends z.ZodType>(schema: T, maxOutputTokens: number) => {
+  const generate = async <T extends z.ZodType>(schema: T, maxOutputTokens: number, payload: unknown = input) => {
     const response = await client.responses.parse({
       model: STORY_MODEL,
       store: false,
       instructions: composeInstructions(input.step, format),
-      input: JSON.stringify(input),
+      input: JSON.stringify(payload),
       max_output_tokens: maxOutputTokens,
       text: { format: zodTextFormat(schema, input.step) },
     });
-    const usage = toUsageRecord(input.step, STORY_MODEL, response.usage);
-    console.info("Model usage", { step: input.step, model: STORY_MODEL, usage });
+    const model = response.model || STORY_MODEL;
+    const usage = toUsageRecord(input.step, model, response.usage);
+    console.info("Model usage", { step: input.step, model, usage });
     if (response.status !== "completed" || !response.output_parsed) throw new Error("Incomplete model result");
     return { output: response.output_parsed, usage };
   };
@@ -54,8 +60,10 @@ export async function POST(request: Request) {
       return Response.json({ ...draft, usage });
     }
     if (input.step === "interview") {
-      const { output, usage } = await generate(interviewTurnOutput, 1_500);
-      const resolved = resolveInterviewTurn(output, input.answered ?? [], MAX_INTERVIEW_TURNS);
+      const context = input.context ?? EMPTY_CONTEXT;
+      const missing = missingCategories(context).map((category) => category.id);
+      const { output, usage } = await generate(interviewTurnOutput, 2_000, { ...input, context, missing });
+      const resolved = resolveInterviewTurn(output, input.answered ?? [], context, MAX_INTERVIEW_TURNS);
       return Response.json({ ...resolved, usage });
     }
 

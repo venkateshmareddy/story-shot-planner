@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { formatSchema } from "@/lib/formats";
 import { collectedItem, MAX_INTERVIEW_TURNS } from "./interview";
+import { storyContextSchema } from "./story-context-schema";
 import {
   MAX_ANSWER_CHARACTERS,
   MAX_CHAT_HISTORY,
@@ -23,13 +24,15 @@ export const planningRequest = z.discriminatedUnion("step", [
     step: z.literal("interview"),
     story,
     answered: z.array(interviewExchange).max(MAX_INTERVIEW_TURNS).optional(),
+    context: storyContextSchema.optional(),
     format: formatSchema.optional(),
   }),
   z.object({
     step: z.literal("plan"),
     story,
-    answers: z.array(interviewExchange).min(1).max(MAX_INTERVIEW_TURNS),
-    collected: z.array(collectedItem).max(40).optional(),
+    answers: z.array(interviewExchange).max(MAX_INTERVIEW_TURNS),
+    collected: z.array(collectedItem).max(80).optional(),
+    context: storyContextSchema.optional(),
     format: formatSchema.optional(),
   }),
 ]);

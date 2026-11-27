@@ -30,7 +30,7 @@ A chat-first AI creative director for filmmaking. Through conversation it develo
 - Specialist advice (story, cinematography, sound, editing, continuity) comes back as one Creative Director reply; any change it proposes needs Apply.
 - Never silently replace an approved creative decision — propose, explain, and wait for Apply.
 
-## Approved direction — not in the MVP (needs approval before building)
+## Implemented extensions
 
 - Additional formats: feature film, web series, documentary, advertisement, music video. They are registered in the format registry but disabled.
 - Uploading documents and images as inputs; analysing images for composition, angle, lighting, colour, environment, character placement and mood (analysis only).

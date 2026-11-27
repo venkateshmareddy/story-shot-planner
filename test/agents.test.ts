@@ -255,7 +255,7 @@ test("synthesis failure falls back to a deterministic reply", async () => {
     },
   });
   const result = await runDirector(request("Better lighting and a softer score"), fake.deps);
-  assert.equal(result.reply, "Cinematography: Camera\n\nSound: Sound");
+  assert.equal(result.reply, "Camera: Camera\n\nSound: Sound");
   assert.equal(result.usage.length, 2);
 });
 

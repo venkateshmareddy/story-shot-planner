@@ -2,7 +2,7 @@ import type { z } from "zod";
 import { PLAIN_LANGUAGE, SOURCE_RULES } from "@/lib/server/prompts";
 import type { ShotPlan } from "@/lib/story-planning";
 import type { EditField } from "./schemas";
-import type { SpecialistId } from "./types";
+import type { ImageReference, SpecialistId } from "./types";
 
 export type SpecialistDefinition = {
   id: SpecialistId;
@@ -14,7 +14,7 @@ export type SpecialistDefinition = {
   schema: z.ZodType;
   maxOutputTokens: number;
   /** Only the plan slice this specialist needs. */
-  buildContext: (plan: ShotPlan) => unknown;
+  buildContext: (plan: ShotPlan, references?: readonly ImageReference[]) => unknown;
 };
 
 export function shotId(sceneIndex: number, shotIndex: number) {

@@ -9,6 +9,8 @@ const format = (value: number) => numberFormat.format(value);
 export function UsageView({ sessions, budget }: { sessions: StorySession[]; budget: number }) {
   const allRecords = sessions.flatMap((session) => session.usage);
   const totals = totalUsage(allRecords);
+  const usedModels = Array.from(new Set(allRecords.map((record) => record.model).filter(Boolean)));
+  const models = usedModels.length > 0 ? usedModels : [STORY_MODEL, TRANSCRIPTION_MODEL];
 
   return (
     <section className="settings-section-view" aria-labelledby="usage-view-title">
@@ -20,7 +22,12 @@ export function UsageView({ sessions, budget }: { sessions: StorySession[]; budg
           <p className="muted">Token counts reported by the model API, summed across your sessions.</p>
         </div>
         <span className="usage-models">
-          <code>{STORY_MODEL}</code> · <code>{TRANSCRIPTION_MODEL}</code>
+          {models.map((model, index) => (
+            <span key={model}>
+              {index > 0 && " · "}
+              <code>{model}</code>
+            </span>
+          ))}
         </span>
       </header>
 

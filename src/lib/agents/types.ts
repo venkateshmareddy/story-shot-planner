@@ -13,10 +13,25 @@ export type SpecialistId = (typeof SPECIALIST_IDS)[number];
 
 export const SPECIALIST_LABELS: Record<SpecialistId, string> = {
   "story-analyst": "Story",
-  "cinematography-director": "Cinematography",
+  "cinematography-director": "Camera",
   "sound-director": "Sound",
   "editing-director": "Editing",
-  "continuity-reviewer": "Continuity",
+  "continuity-reviewer": "Consistency",
+};
+
+/** Analysis of a filmmaker-uploaded reference image. Text only — the image itself is never stored. */
+export type ImageReference = {
+  id: string;
+  name: string;
+  summary: string;
+  composition: string;
+  lighting: string;
+  cameraAngle: string;
+  colour: string;
+  environment: string;
+  mood: string;
+  /** How this reference could shape the film's shots. */
+  shotIdeas: string;
 };
 
 export type RecommendationPriority = "high" | "medium" | "low";
@@ -41,6 +56,14 @@ export type DirectorRequest = {
   /** Interview answers and collected creative details: approved project context. */
   answers?: { question: string; answer: string }[];
   collected?: CollectedItem[];
+  /** Analysed reference images (text only). The cinematography specialist uses these. */
+  references?: ImageReference[];
+};
+
+/** POST /api/story/image success response. Body: raw image bytes, header `X-Image-Type` (image/png | image/jpeg | image/webp) and optional `X-Image-Name`. */
+export type ImageAnalysisResponse = {
+  reference: ImageReference;
+  usage: UsageRecord;
 };
 
 /** POST /api/story/director success response. */

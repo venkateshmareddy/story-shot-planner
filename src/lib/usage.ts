@@ -9,7 +9,8 @@ export type UsageStep =
   | "cinematography-director"
   | "sound-director"
   | "editing-director"
-  | "continuity-reviewer";
+  | "continuity-reviewer"
+  | "image-analysis";
 
 export type UsageRecord = {
   step: UsageStep;

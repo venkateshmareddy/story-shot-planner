@@ -2,6 +2,12 @@
 
 **Last updated:** 2026-11-27, after live integration and end-to-end verification. Checkpoint commit `2a4621b` on branch `initial-start` (not pushed). Update this file after every major phase.
 
+## Current working tree — Phase 4, 5 and 6 handoff
+
+The work after the checkpoint is implemented in the working tree and is the current source of truth. It adds the 20-category `StoryContext` discovery controller, stop/skip/you-decide commands, a real OpenAI-backed Creative Director with Story, Camera, Sound, Editing and Consistency specialists, selective parallel calls, image-reference analysis, scoped scene revisions, and draft/final filmmaking-blueprint exports in PDF and DOCX. The plan call receives edited answers, collected details and context; original dialogue is allowed.
+
+On 2026-11-27, the code-level handoff validation passed: `npm test` (116 tests), `npm run lint`, `npm run typecheck` and `npm run build`. The New project header/session-selection mismatch is fixed, and request busy/error state is now tied to the session that started the request. The Phase 4–6 paths still need one consolidated browser run and a live image-analysis call before they can be marked browser- or live-API-verified.
+
 Verification levels: **live-API** (real OpenAI call observed) · **browser (real AI)** (driven in Chrome against real model responses) · **browser (UI, AI mocked)** (driven in Chrome with `/api/story/*` mocked) · **unit-tested** (`npm test`) · **code-level** (read in the code, not run).
 
 ## Phases
@@ -51,6 +57,8 @@ No console errors, page errors or unexpected navigations in the browser runs.
 ## Uncommitted since checkpoint `2a4621b`
 
 - **Story Editor reworked to read-first (clutter reduction).** Default is a scannable read view (logline, intent, character/location lists, compact shot cards). Editing is opt-in per section: an **Edit/Done** toggle on *Overview* (covers title, logline, intent, characters, locations) and one per **scene**; inputs render only for the section being edited. **Scenes are collapsible** (chevron + shot count). Same `onEditPlan`/`onTitleChange` plumbing, so manual edits and Apply/Discard are unchanged. Files: `src/app/story-editor.tsx` (rewrite), `src/app/globals.css` (12 new selectors). Verification: **code-level** + lint/typecheck/test/build pass; **not browser-verified yet**.
+- **Usage now records the real model id.** `plan`, `refine`, `director` and `transcribe` record `response.model` (the model the API actually returned) instead of the hardcoded constant, falling back to the constant if absent. The Token usage header shows the distinct real models from records, falling back to `STORY_MODEL`/`TRANSCRIPTION_MODEL` before any call. Request model (what we ask for) is unchanged. Files: `api/story/{plan,director,transcribe}/route.ts`, `server/refine.ts`, `usage-view.tsx`. Verification: **code-level** + lint/typecheck/test/build; **not live-API-verified** (can't confirm the exact returned id from here).
+- **Story Editor project title is read-only** (set at New Chat, renamed in the sidebar); fixes the empty-title bug. Files: `story-editor.tsx`, `studio-app.tsx`.
 - **Conversation composer + Generate control reworked.** "Generate shot plan" moved out of the banner into a small **Generate plan** button in the panel header (opposite the title), with a hover/focus **tooltip** explaining what it does. Composer now uses **icon-only** controls: a **paperclip** attach button and a **mic** record button (no text labels, `aria-label` + `title` kept). Attach imports a **.txt/.pdf** via `importDocument` (reuses the previously-unused `/api/story/import` for PDF, `file.text()` for TXT) and inserts the text into the composer, truncated to the phase limit (2,000 discovery / 4,000 refine). Files: `conversation-panel.tsx`, `voice-recorder.tsx`, `studio-agent.ts` (+`importDocument`), `studio-app.tsx` (+`handleUpload`), `globals.css`. Verification: **code-level** + lint/typecheck/test/build pass; **not browser-verified**.
 - Earlier UX passes (also post-checkpoint): sidebar collapse toggle moved into the sidebar header; token-budget meter on the usage view with a budget setting; ChatGPT-style focused Settings screen (section nav + Back to app); read-first Story Editor.
 

@@ -1,15 +1,35 @@
 "use client";
 
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { ExportMenu } from "@/app/export-menu";
 import { ConversationPanel } from "./conversation-panel";
 import { SettingsScreen, type SettingsSection } from "./settings-screen";
 import { Sidebar } from "./sidebar";
 import { StoryEditor } from "./story-editor";
 import type { ResolvedInterviewTurn } from "@/lib/interview";
+import { answerFor } from "@/lib/quick-actions";
 import { MAX_SESSION_TITLE, newId, planSignature, type ChatMessage, type StorySession } from "@/lib/session";
+import {
+  approveFact,
+  contextReadiness,
+  detectDiscoveryCommand,
+  EMPTY_CONTEXT,
+  removeFact,
+  type StoryContext,
+} from "@/lib/story-context";
 import { MAX_ANSWER_CHARACTERS, MAX_CHAT_HISTORY, MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
 import type { ShotPlan } from "@/lib/story-planning";
-import { askDirector, askInterview, generatePlan, importDocument, transcribeVoice } from "@/lib/studio-agent";
+import {
+  analyzeImage,
+  askDirector,
+  askInterview,
+  directorCollected,
+  generatePlan,
+  imageTypeOf,
+  importDocument,
+  MAX_REFERENCES,
+  transcribeVoice,
+} from "@/lib/studio-agent";
 import { useSessions } from "@/lib/use-sessions";
 import { useTokenBudget } from "@/lib/use-token-budget";
 import type { UsageRecord } from "@/lib/usage";
@@ -24,12 +44,32 @@ export function StudioApp() {
   const [creating, setCreating] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const [input, setInput] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busySessionId, setBusySessionId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [transcribing, setTranscribing] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [uploading, setUploading] = useState<"document" | "image" | null>(null);
   const [voiceError, setVoiceError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const activeIdRef = useRef<string | null>(store.activeId);
+  const requestIdRef = useRef(0);
+  const busy = busySessionId === store.activeId;
+
+  activeIdRef.current = store.activeId;
+
+  function beginRequest(id: string) {
+    const requestId = ++requestIdRef.current;
+    setBusySessionId(id);
+    if (activeIdRef.current === id) setError("");
+    return requestId;
+  }
+
+  function finishRequest(requestId: number) {
+    if (requestId === requestIdRef.current) setBusySessionId(null);
+  }
+
+  function isActiveRequestSession(id: string) {
+    return activeIdRef.current === id;
+  }
 
   // Open the sidebar by default on desktop; keep it closed (drawer) on small screens.
   useEffect(() => {
@@ -61,8 +101,9 @@ export function StudioApp() {
   );
 
   const applyInterviewTurn = useCallback(
-    (id: string, turn: ResolvedInterviewTurn, usage?: UsageRecord) => {
-      store.update(id, (session) => {
+    (id: string, turn: ResolvedInterviewTurn, usage?: UsageRecord, context?: StoryContext) => {
+      store.update(id, (base) => {
+        const session = context ? { ...base, context } : base;
         if (turn.status === "ask") {
           const question: ChatMessage = {
             id: newId(),
@@ -97,20 +138,16 @@ export function StudioApp() {
     [store, recordUsage],
   );
 
-  const openConversation = useCallback(
-    async (id: string, title: string) => {
-      setBusy(true);
-      setError("");
-      const result = await askInterview(title, []);
-      setBusy(false);
-      if (!result.ok) {
-        setError(result.error);
-        return;
-      }
-      applyInterviewTurn(id, result.turn, result.usage);
-    },
-    [applyInterviewTurn],
-  );
+  async function openConversation(id: string, title: string) {
+    const requestId = beginRequest(id);
+    const result = await askInterview(title, []);
+    finishRequest(requestId);
+    if (!result.ok) {
+      if (isActiveRequestSession(id)) setError(result.error);
+      return;
+    }
+    applyInterviewTurn(id, result.turn, result.usage, result.context);
+  }
 
   function submitTitle(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -124,7 +161,16 @@ export function StudioApp() {
     void openConversation(id, title);
   }
 
-  async function sendDiscovery(session: StorySession, text: string) {
+  async function sendDiscovery(session: StorySession, text: string, fromComposer = true) {
+    const command = detectDiscoveryCommand(text);
+    if (command === "stop") {
+      const stopMessage: ChatMessage = { id: newId(), role: "user", text };
+      store.update(session.id, (current) => ({ ...current, messages: [...current.messages, stopMessage] }));
+      if (fromComposer) setInput("");
+      await createPlan(session, stopMessage, fromComposer ? text : "");
+      return;
+    }
+    const answer = answerFor(command, text);
     const userMessage: ChatMessage = {
       id: newId(),
       role: "user",
@@ -132,7 +178,7 @@ export function StudioApp() {
       answerIndex: session.pendingQuestion ? session.answered.length : undefined,
     };
     const nextAnswered = session.pendingQuestion
-      ? [...session.answered, { question: session.pendingQuestion, answer: text }]
+      ? [...session.answered, { question: session.pendingQuestion, answer }]
       : session.answered;
     store.update(session.id, (current) => ({
       ...current,
@@ -140,12 +186,11 @@ export function StudioApp() {
       answered: nextAnswered,
       pendingQuestion: null,
     }));
-    setInput("");
-    setBusy(true);
-    setError("");
+    if (fromComposer) setInput("");
+    const requestId = beginRequest(session.id);
 
-    const result = await askInterview(session.title, nextAnswered);
-    setBusy(false);
+    const result = await askInterview(session.title, nextAnswered, session.context);
+    finishRequest(requestId);
     if (!result.ok) {
       store.update(session.id, (current) => ({
         ...current,
@@ -153,14 +198,14 @@ export function StudioApp() {
         answered: session.answered,
         pendingQuestion: session.pendingQuestion,
       }));
-      setInput((previous) => previous || text);
-      setError(result.error);
+      if (fromComposer && isActiveRequestSession(session.id)) setInput((previous) => previous || text);
+      if (isActiveRequestSession(session.id)) setError(result.error);
       return;
     }
-    applyInterviewTurn(session.id, result.turn, result.usage);
+    applyInterviewTurn(session.id, result.turn, result.usage, result.context);
   }
 
-  async function sendRefine(session: StorySession, text: string) {
+  async function sendRefine(session: StorySession, text: string, fromComposer = true) {
     if (!session.plan) return;
     const baseSignature = planSignature(session.plan);
     const userMessage: ChatMessage = { id: newId(), role: "user", text };
@@ -168,25 +213,25 @@ export function StudioApp() {
       .slice(-MAX_CHAT_HISTORY)
       .map((message) => ({ role: message.role, text: message.text }));
     store.update(session.id, (current) => ({ ...current, messages: [...current.messages, userMessage] }));
-    setInput("");
-    setBusy(true);
-    setError("");
+    if (fromComposer) setInput("");
+    const requestId = beginRequest(session.id);
 
     const result = await askDirector({
       plan: session.plan,
       messages: history,
       message: text,
       answers: session.answered,
-      collected: session.collected,
+      collected: directorCollected(session.context, session.collected),
+      references: session.references?.length ? session.references : undefined,
     });
-    setBusy(false);
+    finishRequest(requestId);
     if (!result.ok) {
       store.update(session.id, (current) => ({
         ...current,
         messages: current.messages.filter((message) => message.id !== userMessage.id),
       }));
-      setInput((previous) => previous || text);
-      setError(result.error);
+      if (fromComposer && isActiveRequestSession(session.id)) setInput((previous) => previous || text);
+      if (isActiveRequestSession(session.id)) setError(result.error);
       return;
     }
     const { response } = result;
@@ -217,26 +262,37 @@ export function StudioApp() {
     else void sendRefine(active, text.slice(0, MAX_CHAT_MESSAGE_CHARACTERS));
   }
 
-  async function doGeneratePlan() {
-    if (!active || busy) return;
-    if (active.answered.length < 1) {
-      setError("Answer at least one question before generating the plan.");
-      return;
-    }
-    setBusy(true);
-    setError("");
-    const result = await generatePlan(active.title, active.answered, active.collected);
-    setBusy(false);
+  function sendDiscoveryAction(label: string) {
+    if (!active || busy || transcribing || uploading || active.phase !== "discovery") return;
+    void sendDiscovery(active, label, false);
+  }
+
+  function sendQuickAction(message: string) {
+    if (!active || busy || transcribing || uploading || active.phase !== "refining") return;
+    void sendRefine(active, message, false);
+  }
+
+  async function createPlan(session: StorySession, trigger?: ChatMessage, draft = "") {
+    const requestId = beginRequest(session.id);
+    const result = await generatePlan(session.title, session.answered, session.collected, session.context);
+    finishRequest(requestId);
     if (!result.ok) {
-      setError(result.error);
+      if (trigger) {
+        store.update(session.id, (current) => ({
+          ...current,
+          messages: current.messages.filter((message) => message.id !== trigger.id),
+        }));
+      }
+      if (draft && isActiveRequestSession(session.id)) setInput((previous) => previous || draft);
+      if (isActiveRequestSession(session.id)) setError(result.error);
       return;
     }
     const message: ChatMessage = {
       id: newId(),
       role: "agent",
-      text: "I’ve drafted a full shot plan — it’s in the editor on the right. Tell me what to change and I’ll propose edits for your approval.",
+      text: "Your shot plan is ready on the right. Tell me what to change, or tap a button below for expert advice. Nothing changes until you press Apply.",
     };
-    store.update(active.id, (current) => ({
+    store.update(session.id, (current) => ({
       ...current,
       plan: result.plan,
       phase: "refining",
@@ -244,7 +300,12 @@ export function StudioApp() {
       pendingQuestion: null,
       messages: [...current.messages, message],
     }));
-    recordUsage(active.id, result.usage);
+    recordUsage(session.id, result.usage);
+  }
+
+  function doGeneratePlan() {
+    if (!active || busy) return;
+    void createPlan(active);
   }
 
   function acceptProposal(message: ChatMessage) {
@@ -272,9 +333,10 @@ export function StudioApp() {
     if (!text) return false;
     const index = active.messages.find((message) => message.id === messageId)?.answerIndex;
     if (index === undefined || !active.answered[index]) return false;
+    const answer = answerFor(detectDiscoveryCommand(text), text);
     store.update(active.id, (current) => ({
       ...current,
-      answered: current.answered.map((item, position) => (position === index ? { ...item, answer: text } : item)),
+      answered: current.answered.map((item, position) => (position === index ? { ...item, answer } : item)),
       messages: current.messages.map((message) => (message.id === messageId ? { ...message, text } : message)),
     }));
     return true;
@@ -288,6 +350,11 @@ export function StudioApp() {
         item.id === id ? { ...item, status: "rejected", proposedPlan: undefined } : item,
       ),
     }));
+  }
+
+  function updateContext(change: (context: StoryContext) => StoryContext) {
+    if (!active || busy) return;
+    store.update(active.id, (current) => (current.context ? { ...current, context: change(current.context) } : current));
   }
 
   function editPlan(mutate: (plan: ShotPlan) => void) {
@@ -314,12 +381,37 @@ export function StudioApp() {
     setInput((current) => (current.trim() ? `${current.trim()} ${result.text}` : result.text));
   }
 
+  async function handleImage(file: File) {
+    if (!active) return;
+    const id = active.id;
+    setUploading("image");
+    setVoiceError("");
+    const result = await analyzeImage(file);
+    setUploading(null);
+    if (!result.ok) {
+      setVoiceError(result.error);
+      return;
+    }
+    const { reference, usage } = result;
+    const message: ChatMessage = { id: newId(), role: "agent", text: reference.summary, reference };
+    store.update(id, (current) => ({
+      ...current,
+      references: [...(current.references ?? []), reference].slice(-MAX_REFERENCES),
+      messages: [...current.messages, message],
+      usage: [...current.usage, usage],
+    }));
+  }
+
   async function handleUpload(file: File) {
     if (!active) return;
-    setUploading(true);
+    if (imageTypeOf(file)) {
+      await handleImage(file);
+      return;
+    }
+    setUploading("document");
     setVoiceError("");
     const result = await importDocument(file);
-    setUploading(false);
+    setUploading(null);
     if (!result.ok) {
       setVoiceError(result.error);
       return;
@@ -377,7 +469,7 @@ export function StudioApp() {
       )}
       <Sidebar
         sessions={store.sessions}
-        activeId={store.activeId}
+        activeId={creating ? null : store.activeId}
         view={view}
         open={sidebarOpen}
         onNewChat={startNewChat}
@@ -405,7 +497,10 @@ export function StudioApp() {
               ☰
             </button>
           )}
-          <span className="app-topbar-title">{active?.title ?? "Story Studio"}</span>
+          <span className="app-topbar-title">
+            {creating ? "New project" : active?.title ?? "Story Studio"}
+          </span>
+          {!creating && active && <ExportMenu session={active} />}
         </div>
 
         {store.storageWarning && (
@@ -423,7 +518,7 @@ export function StudioApp() {
             </h2>
             <form className="new-chat-form" onSubmit={submitTitle}>
               <label className="editor-field-label" htmlFor="new-chat-input">
-                What is your project title?
+                Title
               </label>
               <input
                 id="new-chat-input"
@@ -439,8 +534,7 @@ export function StudioApp() {
               </button>
             </form>
             <p className="muted new-chat-hint">
-              That’s all we need to start. The creative director will ask about the genre, characters, scenes and
-              everything else as you chat — one question at a time.
+              That’s all we need to start. We’ll ask about the rest, one question at a time.
             </p>
           </section>
         ) : active ? (
@@ -452,10 +546,15 @@ export function StudioApp() {
               input={input}
               transcribing={transcribing}
               voiceError={voiceError}
-              canGeneratePlan={active.phase === "discovery" && active.answered.length >= 1}
+              canGeneratePlan={
+                active.phase === "discovery" &&
+                (active.answered.length >= 1 || contextReadiness(active.context ?? EMPTY_CONTEXT).ready)
+              }
               uploading={uploading}
               onInput={setInput}
               onSend={send}
+              onQuickAction={sendQuickAction}
+              onDiscoveryAction={sendDiscoveryAction}
               onGeneratePlan={doGeneratePlan}
               onAccept={acceptProposal}
               onReject={rejectProposal}
@@ -465,7 +564,13 @@ export function StudioApp() {
               onUpload={handleUpload}
               onRetry={() => void openConversation(active.id, active.title)}
             />
-            <StoryEditor session={active} onEditPlan={editPlan} />
+            <StoryEditor
+              session={active}
+              busy={busy}
+              onEditPlan={editPlan}
+              onApproveFact={(key) => updateContext((context) => approveFact(context, key))}
+              onRemoveFact={(key) => updateContext((context) => removeFact(context, key))}
+            />
           </div>
         ) : null}
       </main>

@@ -36,8 +36,10 @@ export async function POST(request: Request) {
       model: TRANSCRIPTION_MODEL,
       file: new File([audio], `voice-note.${extension}`, { type }),
     });
-    const usage = toUsageRecord("transcribe", TRANSCRIPTION_MODEL, result.usage);
-    console.info("Model usage", { step: "transcribe", model: TRANSCRIPTION_MODEL, usage });
+    const returned = (result as { model?: unknown }).model;
+    const model = typeof returned === "string" && returned ? returned : TRANSCRIPTION_MODEL;
+    const usage = toUsageRecord("transcribe", model, result.usage);
+    console.info("Model usage", { step: "transcribe", model, usage });
     if (!result.text?.trim()) return jsonError("No speech was found in the voice note.", 422);
     if (result.text.length > MAX_STORY_CHARACTERS) return jsonError("Use a shorter voice note.", 422);
     return Response.json({ text: result.text, usage });

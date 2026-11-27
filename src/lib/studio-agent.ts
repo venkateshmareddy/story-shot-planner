@@ -1,6 +1,8 @@
 import {
   type DirectorRequest,
   type DirectorResponse,
+  type ImageAnalysisResponse,
+  type ImageReference,
   type Recommendation,
   SPECIALIST_LABELS,
   type SpecialistId,
@@ -15,6 +17,15 @@ import {
   MAX_UPLOAD_MB,
   MAX_VOICE_BYTES,
 } from "@/lib/story-input";
+import {
+  EMPTY_CONTEXT,
+  MAX_CONTEXT_FACTS,
+  MAX_UNRESOLVED,
+  type ContextFact,
+  type StoryContext,
+  toCollected,
+} from "@/lib/story-context";
+import { contextFactSchema } from "@/lib/story-context-schema";
 import type { ShotPlan } from "@/lib/story-planning";
 import { isUsageRecord, type UsageRecord } from "@/lib/usage";
 
@@ -45,31 +56,61 @@ function pickUsage(data: Record<string, unknown>): UsageRecord | undefined {
   return isUsageRecord(data.usage) ? data.usage : undefined;
 }
 
+/** Keeps every well-formed fact and drops the rest; null when the value isn't a context at all. */
+export function parseStoryContext(value: unknown): StoryContext | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.facts) || !Array.isArray(record.unresolved)) return null;
+  const facts = record.facts
+    .map((fact) => contextFactSchema.safeParse(fact))
+    .filter((parsed) => parsed.success)
+    .map((parsed) => parsed.data as ContextFact)
+    .slice(0, MAX_CONTEXT_FACTS);
+  const unresolved = record.unresolved
+    .filter((item): item is string => typeof item === "string" && item.trim() !== "")
+    .map((item) => item.trim().slice(0, 300))
+    .slice(0, MAX_UNRESOLVED);
+  return { facts, unresolved };
+}
+
 export async function askInterview(
   story: string,
   answered: { question: string; answer: string }[],
-): Promise<AgentResult<{ turn: ResolvedInterviewTurn } & WithUsage>> {
-  const result = await postJson("/api/story/plan", { step: "interview", story, answered });
+  context?: StoryContext,
+): Promise<AgentResult<{ turn: ResolvedInterviewTurn; context?: StoryContext } & WithUsage>> {
+  const result = await postJson("/api/story/plan", { step: "interview", story, answered, context });
   if (!result.ok) return result;
   const { data } = result;
   if (data.status !== "ask" && data.status !== "complete") {
     return { ok: false, error: "The creative director returned an unexpected result. Try again." };
   }
-  return { ok: true, turn: data as unknown as ResolvedInterviewTurn, usage: pickUsage(data) };
+  return {
+    ok: true,
+    turn: data as unknown as ResolvedInterviewTurn,
+    context: parseStoryContext(data.context) ?? undefined,
+    usage: pickUsage(data),
+  };
 }
 
 const MAX_COLLECTED_ITEMS = 40;
+const MAX_PLAN_COLLECTED = 80;
+
+export function directorCollected(context: StoryContext | undefined, collected: CollectedItem[]): CollectedItem[] {
+  return context ? toCollected(context, MAX_COLLECTED_ITEMS) : collected.slice(0, MAX_COLLECTED_ITEMS);
+}
 
 export async function generatePlan(
   story: string,
   answers: { question: string; answer: string }[],
   collected: CollectedItem[],
+  context?: StoryContext,
 ): Promise<AgentResult<{ plan: ShotPlan } & WithUsage>> {
   const result = await postJson("/api/story/plan", {
     step: "plan",
     story,
     answers,
-    collected: collected.slice(0, MAX_COLLECTED_ITEMS),
+    collected: context ? toCollected(context, MAX_PLAN_COLLECTED) : collected.slice(0, MAX_PLAN_COLLECTED),
+    context: context ?? EMPTY_CONTEXT,
   });
   if (!result.ok) return result;
   const { data } = result;
@@ -119,6 +160,7 @@ export async function askDirector(request: DirectorRequest): Promise<AgentResult
     message: request.message.slice(0, MAX_CHAT_MESSAGE_CHARACTERS),
     answers: request.answers?.map((item) => ({ question: item.question, answer: item.answer.slice(0, MAX_ANSWER_CHARACTERS) })),
     collected: request.collected?.slice(0, MAX_COLLECTED_ITEMS),
+    references: request.references?.length ? request.references.slice(-MAX_REFERENCES) : undefined,
   };
   const result = await postJson("/api/story/director", body);
   if (!result.ok) return result;
@@ -145,7 +187,7 @@ export async function askDirector(request: DirectorRequest): Promise<AgentResult
 export async function importDocument(file: File): Promise<AgentResult<{ text: string }>> {
   const extension = file.name.split(".").pop()?.toLowerCase();
   if (extension !== "txt" && extension !== "pdf") {
-    return { ok: false, error: "Choose a TXT or PDF file." };
+    return { ok: false, error: "Choose a TXT or PDF document, or a PNG, JPG or WebP image." };
   }
   const limit = MAX_UPLOAD_MB[extension];
   if (file.size > limit * BYTES_PER_MB) {
@@ -198,5 +240,73 @@ export async function transcribeVoice(file: File): Promise<AgentResult<{ text: s
     return { ok: true, text: result.text, usage: pickUsage(result) };
   } catch {
     return { ok: false, error: "The voice note couldn’t be transcribed. Try again or type your message." };
+  }
+}
+
+export const MAX_REFERENCES = 6;
+const MAX_IMAGE_BYTES = 4_000_000;
+const MAX_REFERENCE_FIELD = 1_500;
+const IMAGE_TYPES: Readonly<Record<string, string>> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  webp: "image/webp",
+};
+const REFERENCE_FIELDS = [
+  "id",
+  "name",
+  "summary",
+  "composition",
+  "lighting",
+  "cameraAngle",
+  "colour",
+  "environment",
+  "mood",
+  "shotIdeas",
+] as const satisfies readonly (keyof ImageReference)[];
+
+export function imageTypeOf(file: File): string | null {
+  const extension = file.name.split(".").pop()?.toLowerCase() ?? "";
+  if (Object.hasOwn(IMAGE_TYPES, extension)) return IMAGE_TYPES[extension];
+  return Object.values(IMAGE_TYPES).includes(file.type) ? file.type : null;
+}
+
+function parseReference(value: unknown): ImageReference | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (!REFERENCE_FIELDS.every((field) => typeof record[field] === "string")) return null;
+  if (!(record.id as string).trim() || !(record.summary as string).trim()) return null;
+  return Object.fromEntries(
+    REFERENCE_FIELDS.map((field) => [field, (record[field] as string).slice(0, MAX_REFERENCE_FIELD)]),
+  ) as ImageReference;
+}
+
+// Header values must be ByteStrings; keep the name to a safe ASCII subset.
+function headerSafeName(name: string): string {
+  return name.replace(/[^\w .()-]/g, "_").slice(0, 120);
+}
+
+export async function analyzeImage(file: File): Promise<AgentResult<ImageAnalysisResponse>> {
+  const type = imageTypeOf(file);
+  if (!type) return { ok: false, error: "Choose a PNG, JPG or WebP image." };
+  if (file.size > MAX_IMAGE_BYTES) return { ok: false, error: "Choose an image that’s 4 MB or smaller." };
+  if (file.size === 0) return { ok: false, error: "That image looks empty." };
+  try {
+    const response = await fetch("/api/story/image", {
+      method: "POST",
+      headers: { "Content-Type": "application/octet-stream", "X-Image-Type": type, "X-Image-Name": headerSafeName(file.name) },
+      body: file,
+    });
+    const result = (await response.json()) as Record<string, unknown>;
+    if (!response.ok) {
+      return { ok: false, error: typeof result.error === "string" ? result.error : "The image couldn’t be read. Try again." };
+    }
+    const reference = parseReference(result.reference);
+    if (!reference || !isUsageRecord(result.usage)) {
+      return { ok: false, error: "The image study returned an unexpected result. Try again." };
+    }
+    return { ok: true, reference, usage: result.usage };
+  } catch {
+    return { ok: false, error: "The image couldn’t be read. Try again." };
   }
 }

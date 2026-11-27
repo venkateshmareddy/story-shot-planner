@@ -26,8 +26,9 @@ export async function runRefine(client: OpenAI, input: RefineRequest): Promise<R
     max_output_tokens: 10_000,
     text: { format: zodTextFormat(refineOutput, "refine") },
   });
-  const usage = toUsageRecord("refine", STORY_MODEL, response.usage);
-  console.info("Model usage", { step: "refine", model: STORY_MODEL, usage });
+  const model = response.model || STORY_MODEL;
+  const usage = toUsageRecord("refine", model, response.usage);
+  console.info("Model usage", { step: "refine", model, usage });
   if (response.status !== "completed" || !response.output_parsed) throw new Error("Incomplete model result");
 
   const { reply, changeSummary, plan } = response.output_parsed;

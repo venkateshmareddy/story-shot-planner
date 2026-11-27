@@ -2,7 +2,8 @@
 
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import { VoiceRecorder } from "./voice-recorder";
-import { type Recommendation, SPECIALIST_LABELS, type SpecialistId } from "@/lib/agents/types";
+import { type ImageReference, type Recommendation, SPECIALIST_LABELS, type SpecialistId } from "@/lib/agents/types";
+import { DISCOVERY_ACTIONS, QUICK_ACTIONS } from "@/lib/quick-actions";
 import { MAX_ANSWER_CHARACTERS, MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
 import type { ChatMessage, StorySession } from "@/lib/session";
 
@@ -28,7 +29,7 @@ function TeamNotes({ message }: { message: ChatMessage }) {
     <div className="chat-team">
       {recommendations.length > 0 && (
         <details className="chat-team-details" open={recommendations.length <= OPEN_NOTES_LIMIT}>
-          <summary>Team recommendations ({recommendations.length})</summary>
+          <summary>Expert suggestions ({recommendations.length})</summary>
           {groupBySpecialist(recommendations).map(([specialist, items]) => (
             <div className="chat-rec-group" key={specialist}>
               <p className="chat-team-head">{specialistLabel(specialist)}</p>
@@ -54,7 +55,7 @@ function TeamNotes({ message }: { message: ChatMessage }) {
       )}
       {conflicts.length > 0 && (
         <div className="chat-team-conflicts">
-          <p className="chat-team-head">Where the team disagrees</p>
+          <p className="chat-team-head">Where the advice differs</p>
           <ul>
             {conflicts.map((conflict, index) => (
               // biome-ignore lint/suspicious/noArrayIndexKey: Conflicts are fixed per reply and may repeat.
@@ -65,8 +66,36 @@ function TeamNotes({ message }: { message: ChatMessage }) {
       )}
       {failed.length > 0 && (
         <p className="muted chat-team-failed">
-          Couldn’t reach {failed.map(specialistLabel).join(", ")} this time — their notes are missing from this reply.
+          Couldn’t reach {failed.map(specialistLabel).join(", ")} this time, so their advice is missing.
         </p>
+      )}
+    </div>
+  );
+}
+
+function ReferenceNotes({ reference }: { reference: ImageReference }) {
+  const rows: [string, string][] = [
+    ["Composition", reference.composition],
+    ["Lighting", reference.lighting],
+    ["Camera angle", reference.cameraAngle],
+    ["Colour", reference.colour],
+    ["Setting", reference.environment],
+    ["Mood", reference.mood],
+    ["Shot ideas", reference.shotIdeas],
+  ];
+  const filled = rows.filter(([, value]) => value.trim());
+  return (
+    <div className="chat-reference">
+      <p className="chat-reference-head">Reference image{reference.name ? `: ${reference.name}` : ""}</p>
+      {filled.length > 0 && (
+        <dl className="chat-reference-list">
+          {filled.map(([label, value]) => (
+            <div key={label}>
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
       )}
     </div>
   );
@@ -178,6 +207,8 @@ export function ConversationPanel({
   uploading,
   onInput,
   onSend,
+  onQuickAction,
+  onDiscoveryAction,
   onGeneratePlan,
   onAccept,
   onReject,
@@ -194,9 +225,11 @@ export function ConversationPanel({
   transcribing: boolean;
   voiceError: string;
   canGeneratePlan: boolean;
-  uploading: boolean;
+  uploading: "document" | "image" | null;
   onInput: (value: string) => void;
   onSend: () => void;
+  onQuickAction: (message: string) => void;
+  onDiscoveryAction: (label: string) => void;
   onGeneratePlan: () => void;
   onAccept: (message: ChatMessage) => void;
   onReject: (id: string) => void;
@@ -245,8 +278,8 @@ export function ConversationPanel({
           <h3>Creative director</h3>
           <p className="muted">
             {session.phase === "discovery"
-              ? "Answer one question at a time. The story document fills in as you talk."
-              : "Ask for changes in plain language. Review each proposal before it updates the document."}
+              ? "Answer one question at a time. Your story builds up on the right as you go."
+              : "Ask for any change in your own words. Nothing changes until you press Apply."}
           </p>
         </div>
         {discovery && canGeneratePlan && (
@@ -255,15 +288,14 @@ export function ConversationPanel({
               className="button generate-btn"
               type="button"
               disabled={busy}
-              aria-label="Generate shot plan"
+              aria-label="Create shot plan"
               aria-describedby="generate-tip"
               onClick={onGeneratePlan}
             >
-              Generate plan
+              Create shot plan
             </button>
             <span className="tip-text" role="tooltip" id="generate-tip">
-              Turns the conversation so far into a full shot-by-shot plan in the editor. You can keep answering instead —
-              nothing is locked in.
+              Turns your answers so far into a shot-by-shot plan. You can keep answering instead — nothing is locked in.
             </span>
           </span>
         )}
@@ -295,10 +327,11 @@ export function ConversationPanel({
             ) : (
               <div className="chat-bubble chat-agent" key={message.id}>
                 {message.specialists && message.specialists.length > 0 && (
-                  <p className="chat-consulted">Consulted: {message.specialists.map(specialistLabel).join(" · ")}</p>
+                  <p className="chat-consulted">Advice from: {message.specialists.map(specialistLabel).join(" · ")}</p>
                 )}
                 <p className="chat-reply">{message.text}</p>
                 {message.suggestion && <p className="muted chat-suggestion">{message.suggestion}</p>}
+                {message.reference && <ReferenceNotes reference={message.reference} />}
                 <TeamNotes message={message} />
                 {message.changeSummary && message.changeSummary.length > 0 && (
                   <ul className="chat-changes">
@@ -311,7 +344,7 @@ export function ConversationPanel({
                 {message.status === "pending" ? (
                   <div className="chat-proposal-actions">
                     <button className="button" type="button" onClick={() => onAccept(message)}>
-                      Apply to document
+                      Apply to story
                     </button>
                     <button className="button secondary" type="button" onClick={() => onReject(message.id)}>
                       Discard
@@ -319,7 +352,7 @@ export function ConversationPanel({
                   </div>
                 ) : message.status ? (
                   <p className={`chat-status chat-status-${message.status}`}>
-                    {message.status === "accepted" ? "Applied to the document" : "Discarded"}
+                    {message.status === "accepted" ? "Added to your story" : "Discarded"}
                   </p>
                 ) : null}
               </div>
@@ -328,7 +361,7 @@ export function ConversationPanel({
         )}
         {busy && (
           <p className="muted chat-busy" role="status">
-            {discovery ? "The creative director is thinking…" : "Consulting the creative team…"}
+            {discovery ? "The creative director is thinking…" : "Asking the film experts…"}
           </p>
         )}
         <div ref={logEnd} />
@@ -341,6 +374,41 @@ export function ConversationPanel({
       )}
 
       <div className="chat-compose">
+        {discovery && (
+          <fieldset className="quick-actions">
+            <legend className="sr-only">Quick replies</legend>
+            {DISCOVERY_ACTIONS.map((action) => (
+              <button
+                key={action.label}
+                className="quick-action"
+                type="button"
+                disabled={
+                  busy || transcribing || uploading !== null || (action.command !== "stop" && !session.pendingQuestion)
+                }
+                onClick={() => onDiscoveryAction(action.label)}
+              >
+                {action.label}
+              </button>
+            ))}
+          </fieldset>
+        )}
+        {!discovery && (
+          <fieldset className="quick-actions">
+            <legend className="sr-only">Ask a film expert</legend>
+            {QUICK_ACTIONS.map((action) => (
+              <button
+                key={action.label}
+                className="quick-action"
+                type="button"
+                title={action.message}
+                disabled={busy || transcribing || uploading !== null}
+                onClick={() => onQuickAction(action.message)}
+              >
+                {action.label}
+              </button>
+            ))}
+          </fieldset>
+        )}
         <label className="sr-only" htmlFor="conversation-input">
           Message the creative director
         </label>
@@ -360,15 +428,15 @@ export function ConversationPanel({
               ref={fileRef}
               className="sr-only"
               type="file"
-              accept=".txt,.pdf,text/plain,application/pdf"
+              accept=".txt,.pdf,.png,.jpg,.jpeg,.webp,text/plain,application/pdf,image/png,image/jpeg,image/webp"
               onChange={onPickFile}
             />
             <button
               className="icon-btn"
               type="button"
-              aria-label="Attach a .txt or .pdf document"
-              title="Attach a .txt or .pdf document"
-              disabled={busy || uploading}
+              aria-label="Attach a document (.txt, .pdf) or a reference image (.png, .jpg, .webp)"
+              title="Attach a document (.txt, .pdf) or a reference image (.png, .jpg, .webp)"
+              disabled={busy || uploading !== null}
               onClick={() => fileRef.current?.click()}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -380,7 +448,7 @@ export function ConversationPanel({
           <button
             className="button"
             type="button"
-            disabled={busy || transcribing || uploading || !input.trim()}
+            disabled={busy || transcribing || uploading !== null || !input.trim()}
             onClick={onSend}
           >
             Send
@@ -388,7 +456,7 @@ export function ConversationPanel({
         </div>
         {uploading && (
           <p className="muted" role="status">
-            Reading document…
+            {uploading === "image" ? "Studying your image…" : "Reading document…"}
           </p>
         )}
         {transcribing && (

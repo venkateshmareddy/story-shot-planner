@@ -41,8 +41,9 @@ export async function POST(request: Request) {
       },
       { signal },
     );
-    const usage = toUsageRecord(step, STORY_MODEL, response.usage);
-    console.info("Model usage", { step, model: STORY_MODEL, usage });
+    const model = response.model || STORY_MODEL;
+    const usage = toUsageRecord(step, model, response.usage);
+    console.info("Model usage", { step, model, usage });
     if (response.status !== "completed" || !response.output_parsed) {
       throw new ModelOutputError("Incomplete model result", usage);
     }

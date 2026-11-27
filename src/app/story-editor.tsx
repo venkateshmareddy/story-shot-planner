@@ -2,9 +2,19 @@
 
 import { useEffect, useId, useState } from "react";
 import type { StorySession } from "@/lib/session";
+import {
+  categoryOf,
+  type ContextFact,
+  contextReadiness,
+  factKey,
+  missingCategories,
+  type StoryContext,
+} from "@/lib/story-context";
 import type { ShotPlan } from "@/lib/story-planning";
 
 type PlanEditor = (mutate: (plan: ShotPlan) => void) => void;
+type FactAction = (key: string) => void;
+type ContextActions = { busy: boolean; onApproveFact: FactAction; onRemoveFact: FactAction };
 type Scene = ShotPlan["scenes"][number];
 type Shot = Scene["shots"][number];
 
@@ -69,11 +79,15 @@ function RemoveButton({ label, onClick }: { label: string; onClick: () => void }
 
 export function StoryEditor({
   session,
+  busy,
   onEditPlan,
+  onApproveFact,
+  onRemoveFact,
 }: {
   session: StorySession;
   onEditPlan: PlanEditor;
-}) {
+} & ContextActions) {
+  const contextActions: ContextActions = { busy, onApproveFact, onRemoveFact };
   const { plan } = session;
   const [editing, setEditing] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
@@ -103,12 +117,12 @@ export function StoryEditor({
 
   if (!plan) {
     return (
-      <section className="editor-panel panel" aria-label="Story editor">
+      <section className="editor-panel panel" aria-label="Your story">
         <header className="editor-head editor-doc-head">
-          <p className="muted studio-eyebrow">Story editor</p>
+          <p className="muted studio-eyebrow">Your story</p>
           <h2 className="studio-title editor-doc-title">{session.title || "Untitled project"}</h2>
         </header>
-        <DiscoveryDocument session={session} />
+        <DiscoveryDocument session={session} actions={contextActions} />
       </section>
     );
   }
@@ -116,9 +130,9 @@ export function StoryEditor({
   const detailsOpen = isEditing("details");
 
   return (
-    <section className="editor-panel panel" aria-label="Story editor">
+    <section className="editor-panel panel" aria-label="Your story">
       <header className="editor-head editor-doc-head">
-        <p className="muted studio-eyebrow">Story editor</p>
+        <p className="muted studio-eyebrow">Your story</p>
         <h2 className="studio-title editor-doc-title">{session.title || "Untitled project"}</h2>
       </header>
 
@@ -126,13 +140,13 @@ export function StoryEditor({
         <div className="editor-section">
           <div className="editor-section-head-row">
             <h3 className="editor-section-head">Overview</h3>
-            <EditToggle editing={detailsOpen} label="Edit overview, characters and locations" onClick={() => toggleEdit("details")} />
+            <EditToggle editing={detailsOpen} label="Edit overview, characters and places" onClick={() => toggleEdit("details")} />
           </div>
 
           {detailsOpen ? (
             <>
-              <Field label="Logline" value={plan.logline} multiline placeholder="One-sentence summary" onChange={(v) => onEditPlan((p) => { p.logline = v; })} />
-              <Field label="Creative intent" value={plan.intent} multiline placeholder="What this film is really about" onChange={(v) => onEditPlan((p) => { p.intent = v; })} />
+              <Field label="One-line summary" value={plan.logline} multiline placeholder="Describe the film in one sentence" onChange={(v) => onEditPlan((p) => { p.logline = v; })} />
+              <Field label="What the film is about" value={plan.intent} multiline placeholder="The feeling or message you want people to take away" onChange={(v) => onEditPlan((p) => { p.intent = v; })} />
               <CharacterEdit plan={plan} onEditPlan={onEditPlan} />
               <LocationEdit plan={plan} onEditPlan={onEditPlan} />
             </>
@@ -141,7 +155,7 @@ export function StoryEditor({
               {plan.logline && <p className="studio-logline">{plan.logline}</p>}
               {plan.intent && (
                 <div className="studio-intent">
-                  <h4 className="editor-subhead">Creative intent</h4>
+                  <h4 className="editor-subhead">What the film is about</h4>
                   <p>{plan.intent}</p>
                 </div>
               )}
@@ -153,12 +167,21 @@ export function StoryEditor({
 
         {plan.reviewNotes.length > 0 && (
           <div className="studio-notes">
-            <h3>Review notes</h3>
+            <h3>Things to check</h3>
             <ul>
               {[...new Set(plan.reviewNotes)].map((note) => (
                 <li key={note}>{note}</li>
               ))}
             </ul>
+          </div>
+        )}
+
+        {session.context && (session.context.facts.length > 0 || session.context.unresolved.length > 0) && (
+          <div className="editor-section">
+            <details className="story-details">
+              <summary className="editor-section-head">Story details</summary>
+              <StoryContextPanel context={session.context} actions={contextActions} />
+            </details>
           </div>
         )}
 
@@ -202,25 +225,145 @@ export function StoryEditor({
   );
 }
 
-function DiscoveryDocument({ session }: { session: StorySession }) {
+function DiscoveryDocument({ session, actions }: { session: StorySession; actions: ContextActions }) {
   return (
     <div className="editor-doc">
       <p className="muted editor-hint">
-        The document fills in as you talk. Answer the creative director’s questions, then generate the shot plan to
-        unlock characters, locations, scenes and shots.
+        Your story builds up here as you answer. When you’re ready, create the shot plan to see the characters, places,
+        scenes and camera shots.
       </p>
-      {session.collected.length > 0 && (
+      {session.context ? (
         <div className="studio-notes">
-          <h3>Discovered so far</h3>
-          <dl className="shot-props">
-            {session.collected.map((item, index) => (
-              // biome-ignore lint/suspicious/noArrayIndexKey: Collected notes are an ordered, append-only summary.
-              <div className="editor-collected-row" key={`${item.label}-${index}`}>
-                <dt>{item.label}</dt>
-                <dd>{item.detail}</dd>
-              </div>
+          <h3>What we know so far</h3>
+          <StoryContextPanel context={session.context} actions={actions} />
+        </div>
+      ) : (
+        session.collected.length > 0 && (
+          <div className="studio-notes">
+            <h3>What we know so far</h3>
+            <dl className="shot-props">
+              {session.collected.map((item, index) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: Collected notes are an ordered, append-only summary.
+                <div className="editor-collected-row" key={`${item.label}-${index}`}>
+                  <dt>{item.label}</dt>
+                  <dd>{item.detail}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        )
+      )}
+    </div>
+  );
+}
+
+const PRIORITY_TAGS = { critical: "Must have", high: "Important", medium: "Helpful", optional: "Optional" } as const;
+
+function FactList({
+  facts,
+  actions,
+  reviewable,
+}: {
+  facts: ContextFact[];
+  actions: ContextActions;
+  reviewable?: boolean;
+}) {
+  return (
+    <ul className="context-facts">
+      {facts.map((fact, index) => {
+        const key = factKey(fact);
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: Keys repeat only if the server sends duplicate facts.
+          <li className="context-fact" key={`${key}-${index}`}>
+            <span className="context-fact-label">
+              {fact.label}
+              <span className="muted context-fact-category"> · {categoryOf(fact.category).label}</span>
+            </span>
+            <span className="context-fact-value">{fact.value}</span>
+            {reviewable && (
+              <span className="context-fact-actions">
+                <button
+                  className="editor-edit-btn"
+                  type="button"
+                  disabled={actions.busy}
+                  aria-label={`Approve: ${fact.label}`}
+                  onClick={() => actions.onApproveFact(key)}
+                >
+                  Approve
+                </button>
+                <button
+                  className="editor-remove"
+                  type="button"
+                  disabled={actions.busy}
+                  aria-label={`Remove: ${fact.label}`}
+                  onClick={() => actions.onRemoveFact(key)}
+                >
+                  Remove
+                </button>
+              </span>
+            )}
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function StoryContextPanel({ context, actions }: { context: StoryContext; actions: ContextActions }) {
+  const readiness = contextReadiness(context);
+  const missing = missingCategories(context);
+  const criticalMissing = missing.filter((category) => category.priority === "critical");
+  const fromYou = context.facts.filter((fact) => fact.source === "user");
+  const suggestions = context.facts.filter((fact) => fact.source === "ai" && !fact.approved);
+  const approved = context.facts.filter((fact) => fact.source === "ai" && fact.approved);
+  return (
+    <div className="story-context">
+      <p className={`context-readiness${readiness.ready ? " context-ready" : ""}`} aria-live="polite">
+        {readiness.ready
+          ? "Ready to create your plan"
+          : `Still needed: ${criticalMissing.map((category) => category.label).join(", ")}`}
+      </p>
+      {fromYou.length > 0 && (
+        <div className="context-group">
+          <h4 className="editor-subhead">From you</h4>
+          <FactList facts={fromYou} actions={actions} />
+        </div>
+      )}
+      {suggestions.length > 0 && (
+        <div className="context-group">
+          <h4 className="editor-subhead">AI suggestions</h4>
+          <FactList facts={suggestions} actions={actions} reviewable />
+        </div>
+      )}
+      {approved.length > 0 && (
+        <div className="context-group">
+          <h4 className="editor-subhead">Approved</h4>
+          <FactList facts={approved} actions={actions} />
+        </div>
+      )}
+      {missing.length > 0 && (
+        <div className="context-group">
+          <h4 className="editor-subhead">Still missing</h4>
+          <ul className="context-missing">
+            {missing.slice(0, 6).map((category) => (
+              <li key={category.id}>
+                {category.label}
+                <span className={`context-priority context-priority-${category.priority}`}>
+                  {PRIORITY_TAGS[category.priority]}
+                </span>
+              </li>
             ))}
-          </dl>
+          </ul>
+        </div>
+      )}
+      {context.unresolved.length > 0 && (
+        <div className="context-group">
+          <h4 className="editor-subhead">Open questions</h4>
+          <ul className="context-open">
+            {context.unresolved.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
         </div>
       )}
     </div>
@@ -258,7 +401,7 @@ function CharacterRead({ plan }: { plan: ShotPlan }) {
 function LocationRead({ plan }: { plan: ShotPlan }) {
   return (
     <div className="editor-subsection">
-      <h4 className="editor-subhead">Locations</h4>
+      <h4 className="editor-subhead">Places</h4>
       {plan.locations.length === 0 ? (
         <p className="muted">None yet.</p>
       ) : (
@@ -266,7 +409,7 @@ function LocationRead({ plan }: { plan: ShotPlan }) {
           {plan.locations.map((location, index) => (
             // biome-ignore lint/suspicious/noArrayIndexKey: Locations render in plan order.
             <li key={index}>
-              <strong>{location.name || "Unnamed location"}</strong>
+              <strong>{location.name || "Unnamed place"}</strong>
               {location.description && <span className="muted cast-detail">{location.description}</span>}
             </li>
           ))}
@@ -291,13 +434,13 @@ function SceneRead({ scene, sceneIndex }: { scene: Scene; sceneIndex: number }) 
           </header>
           {shot.action && <p className="shot-action">{shot.action}</p>}
           <dl className="shot-props">
-            <dt>Camera</dt>
+            <dt>Camera movement</dt>
             <dd>{shot.camera || "—"}</dd>
-            <dt>Characters</dt>
+            <dt>Who’s in it</dt>
             <dd>{shot.characters.join(", ") || "None"}</dd>
-            <dt>Location</dt>
+            <dt>Place</dt>
             <dd>{shot.location || "—"}</dd>
-            <dt>Emotion</dt>
+            <dt>Feeling</dt>
             <dd>{shot.emotion || "—"}</dd>
             <dt>Sound</dt>
             <dd>{shot.sound || "—"}</dd>
@@ -336,7 +479,7 @@ function CharacterEdit({ plan, onEditPlan }: { plan: ShotPlan; onEditPlan: PlanE
           <Field label="Role" value={character.role} onChange={(v) => onEditPlan((p) => { p.characters[index].role = v; })} />
           <Field label="Look" value={character.look} multiline onChange={(v) => onEditPlan((p) => { p.characters[index].look = v; })} />
           <Field label="Personality" value={character.personality} multiline onChange={(v) => onEditPlan((p) => { p.characters[index].personality = v; })} />
-          <Field label="Voice" value={character.voice} multiline onChange={(v) => onEditPlan((p) => { p.characters[index].voice = v; })} />
+          <Field label="How they speak" value={character.voice} multiline onChange={(v) => onEditPlan((p) => { p.characters[index].voice = v; })} />
         </article>
       ))}
       <SectionAdd label="Add character" onClick={() => onEditPlan((p) => { p.characters.push({ name: "", role: "", look: "", personality: "", voice: "" }); })} />
@@ -347,19 +490,19 @@ function CharacterEdit({ plan, onEditPlan }: { plan: ShotPlan; onEditPlan: PlanE
 function LocationEdit({ plan, onEditPlan }: { plan: ShotPlan; onEditPlan: PlanEditor }) {
   return (
     <div className="editor-subsection">
-      <h4 className="editor-subhead">Locations</h4>
+      <h4 className="editor-subhead">Places</h4>
       {plan.locations.map((location, index) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: Locations are edited in place by position.
         <article className="editor-card" key={index}>
           <div className="editor-card-head">
-            <strong>{location.name || "Unnamed location"}</strong>
-            <RemoveButton label={`Remove ${location.name || "location"}`} onClick={() => onEditPlan((p) => { p.locations.splice(index, 1); })} />
+            <strong>{location.name || "Unnamed place"}</strong>
+            <RemoveButton label={`Remove ${location.name || "place"}`} onClick={() => onEditPlan((p) => { p.locations.splice(index, 1); })} />
           </div>
           <Field label="Name" value={location.name} onChange={(v) => onEditPlan((p) => { p.locations[index].name = v; })} />
           <Field label="Description" value={location.description} multiline onChange={(v) => onEditPlan((p) => { p.locations[index].description = v; })} />
         </article>
       ))}
-      <SectionAdd label="Add location" onClick={() => onEditPlan((p) => { p.locations.push({ name: "", description: "" }); })} />
+      <SectionAdd label="Add place" onClick={() => onEditPlan((p) => { p.locations.push({ name: "", description: "" }); })} />
     </div>
   );
 }
@@ -393,29 +536,29 @@ function SceneEdit({
               <span className="shot-ref">{shotId(sceneIndex, shotIndex)}</span>
               <RemoveButton label={`Remove shot ${shotId(sceneIndex, shotIndex)}`} onClick={() => onEditPlan((p) => { p.scenes[sceneIndex].shots.splice(shotIndex, 1); })} />
             </div>
-            <Field label="Action" value={shot.action} multiline onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].action = v; })} />
+            <Field label="What happens" value={shot.action} multiline onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].action = v; })} />
             <div className="editor-row">
               <Field
-                label="Seconds"
+                label="Length (seconds)"
                 value={String(shot.seconds)}
                 onChange={(v) => onEditPlan((p) => {
                   const n = Number.parseFloat(v);
                   p.scenes[sceneIndex].shots[shotIndex].seconds = Number.isFinite(n) && n > 0 ? n : p.scenes[sceneIndex].shots[shotIndex].seconds;
                 })}
               />
-              <Field label="Framing" value={shot.framing} onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].framing = v; })} />
+              <Field label="Shot size (how close)" value={shot.framing} onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].framing = v; })} />
             </div>
-            <Field label="Camera" value={shot.camera} onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].camera = v; })} />
+            <Field label="Camera movement" value={shot.camera} onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].camera = v; })} />
             <Field
-              label="Characters (comma-separated)"
+              label="Who’s in it (separate names with commas)"
               value={shot.characters.join(", ")}
               onChange={(v) => onEditPlan((p) => {
                 p.scenes[sceneIndex].shots[shotIndex].characters = v.split(",").map((s) => s.trim()).filter(Boolean);
               })}
             />
-            <Field label="Location" value={shot.location} onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].location = v; })} />
+            <Field label="Place" value={shot.location} onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].location = v; })} />
             <div className="editor-row">
-              <Field label="Emotion" value={shot.emotion} onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].emotion = v; })} />
+              <Field label="Feeling" value={shot.emotion} onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].emotion = v; })} />
               <Field label="Sound" value={shot.sound} onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].sound = v; })} />
             </div>
             <DialogueEdit sceneIndex={sceneIndex} shotIndex={shotIndex} lines={shot.dialogue} onEditPlan={onEditPlan} />
@@ -449,9 +592,9 @@ function DialogueEdit({
       {lines.map((line, lineIndex) => (
         // biome-ignore lint/suspicious/noArrayIndexKey: Dialogue lines are edited in place by position.
         <div className="editor-dialogue-row" key={lineIndex}>
-          <Field label="Speaker" value={line.speaker} onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].dialogue[lineIndex].speaker = v; })} />
-          <Field label="Line" value={line.line} multiline onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].dialogue[lineIndex].line = v; })} />
-          <Field label="Delivery" value={line.delivery} onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].dialogue[lineIndex].delivery = v; })} />
+          <Field label="Who speaks" value={line.speaker} onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].dialogue[lineIndex].speaker = v; })} />
+          <Field label="What they say" value={line.line} multiline onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].dialogue[lineIndex].line = v; })} />
+          <Field label="How they say it" value={line.delivery} onChange={(v) => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].dialogue[lineIndex].delivery = v; })} />
           <RemoveButton label={`Remove dialogue line ${lineIndex + 1}`} onClick={() => onEditPlan((p) => { p.scenes[sceneIndex].shots[shotIndex].dialogue.splice(lineIndex, 1); })} />
         </div>
       ))}
