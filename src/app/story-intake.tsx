@@ -1,11 +1,14 @@
 "use client";
 
-import { useState, type ChangeEvent, type FormEvent } from "react";
+import { useRef, useState, type ChangeEvent, type FormEvent } from "react";
+import { StoryWorkflow } from "./story-workflow";
+import { VoicePlayback, VoiceRecorder } from "./voice-recorder";
 import {
   BYTES_PER_MB,
   MAX_STORY_CHARACTERS,
   MAX_UPLOAD_MB,
-  type PdfImportResult,
+  MAX_VOICE_BYTES,
+  type StoryImportResult,
   type StoryMode,
 } from "@/lib/story-input";
 
@@ -19,8 +22,11 @@ export function StoryIntake() {
   const [text, setText] = useState("");
   const [source, setSource] = useState("");
   const [error, setError] = useState("");
-  const [importing, setImporting] = useState(false);
+  const [importing, setImporting] = useState<"file" | "voice">();
   const [reviewing, setReviewing] = useState(false);
+  const [voiceNote, setVoiceNote] = useState<File>();
+  const [capturingVoice, setCapturingVoice] = useState(false);
+  const voiceInput = useRef<HTMLInputElement>(null);
 
   async function importFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.currentTarget.files?.[0];
@@ -40,7 +46,7 @@ export function StoryIntake() {
       return;
     }
 
-    setImporting(true);
+    setImporting("file");
     try {
       let imported: string;
       if (extension === "pdf") {
@@ -49,7 +55,7 @@ export function StoryIntake() {
           headers: { "Content-Type": "application/pdf" },
           body: file,
         });
-        const result: PdfImportResult = await response.json();
+        const result: StoryImportResult = await response.json();
         if ("error" in result) {
           setError(result.error);
           return;
@@ -71,12 +77,47 @@ export function StoryIntake() {
     } catch {
       setError("The file couldn’t be imported. Try again or paste your text.");
     } finally {
-      setImporting(false);
+      setImporting(undefined);
+    }
+  }
+
+  async function transcribeVoiceNote() {
+    if (!voiceNote) return;
+    if (voiceNote.size > MAX_VOICE_BYTES) {
+      setError("Choose a voice note that’s 4 MB or smaller.");
+      return;
+    }
+    setImporting("voice");
+    setError("");
+    try {
+      const response = await fetch("/api/story/transcribe", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "X-Audio-Extension": voiceNote.name.split(".").pop()?.toLowerCase() ?? "",
+        },
+        body: voiceNote,
+      });
+      const result: StoryImportResult = await response.json();
+      if ("error" in result) {
+        setError(result.error);
+        return;
+      }
+      if (!response.ok) throw new Error("Transcription failed");
+      setText(result.text);
+      setSource(voiceNote.name);
+      setVoiceNote(undefined);
+      if (voiceInput.current) voiceInput.current.value = "";
+    } catch {
+      setError("The voice note couldn’t be transcribed. Try again or paste the text.");
+    } finally {
+      setImporting(undefined);
     }
   }
 
   function reviewStory(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (importing || capturingVoice) return;
     if (!text.trim()) {
       setError(mode === "idea" ? "Enter a story idea." : "Enter or import a story.");
       return;
@@ -87,22 +128,16 @@ export function StoryIntake() {
 
   if (reviewing) {
     return (
-      <section className="panel" aria-labelledby="review-title">
-        <h2 id="review-title" tabIndex={-1} ref={(heading) => heading?.focus()}>
-          {mode === "idea" ? "Review your idea" : "Review your story"}
-        </h2>
-        {source && <p className="muted">Imported from {source}</p>}
-        <div className="story-preview">{text}</div>
-        <button className="button secondary" type="button" onClick={() => setReviewing(false)}>
-          Back to editor
-        </button>
-      </section>
+      <StoryWorkflow initialText={text} mode={mode} source={source} onBack={(story) => {
+        setText(story);
+        setReviewing(false);
+      }} />
     );
   }
 
   return (
     <form className="panel" onSubmit={reviewStory}>
-      <fieldset disabled={importing}>
+      <fieldset disabled={Boolean(importing)}>
         <legend>How are you starting?</legend>
         <div className="mode-grid">
           {modes.map((option) => (
@@ -149,18 +184,51 @@ export function StoryIntake() {
               className="file-input"
               type="file"
               accept=".txt,.pdf,text/plain,application/pdf"
+              disabled={capturingVoice}
               onChange={importFile}
             />
             <span className="muted" role="status">
-              {importing
+              {importing === "file"
                 ? "Reading file…"
                 : source
                   ? `Imported from ${source}`
                   : `Up to ${MAX_UPLOAD_MB.txt} MB for TXT or ${MAX_UPLOAD_MB.pdf} MB for PDF`}
             </span>
           </div>
-          <button className="button" type="submit">Review story</button>
+          <button className="button" type="submit" disabled={capturingVoice}>Review story</button>
         </div>
+        <section className="voice-import" aria-labelledby="voice-note-title">
+          <h3 id="voice-note-title">Voice note</h3>
+          <VoiceRecorder
+            onActiveChange={setCapturingVoice}
+            onRecording={(recording) => {
+              setVoiceNote(recording);
+              setError("");
+              if (voiceInput.current) voiceInput.current.value = "";
+            }}
+          />
+          <label className="upload-label" htmlFor="voice-note">Or upload audio up to 4 MB</label>
+          <input id="voice-note" className="file-input" type="file" accept=".mp3,.wav,.m4a,.webm" ref={voiceInput}
+            disabled={capturingVoice}
+            onChange={(event) => {
+              setVoiceNote(event.currentTarget.files?.[0]);
+              setError("");
+            }} />
+          {voiceNote && (
+            <div className="voice-selection">
+              <p className="muted">{voiceNote.name}</p>
+              <VoicePlayback file={voiceNote} />
+              <button className="button secondary" type="button" disabled={capturingVoice}
+                onClick={() => void transcribeVoiceNote()}>Transcribe voice note</button>
+              <button className="button secondary" type="button" disabled={capturingVoice} onClick={() => {
+                setVoiceNote(undefined);
+                setError("");
+                if (voiceInput.current) voiceInput.current.value = "";
+              }}>Discard voice note</button>
+            </div>
+          )}
+          {importing === "voice" && <p role="status" className="muted">Transcribing voice note…</p>}
+        </section>
       </fieldset>
       {error && <p className="error" role="alert">{error}</p>}
     </form>
