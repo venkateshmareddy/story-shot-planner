@@ -117,8 +117,28 @@ test("over-long model text is clipped so the context stays schema-valid", () => 
   assert.equal(storyContextSchema.safeParse(resolved.context).success, true);
 });
 
+test("model-facing interview text is clipped before the next request", () => {
+  const resolved = resolveInterviewTurn(
+    turn({ note: "N".repeat(2_000), question: "Q".repeat(700), rationale: "R".repeat(700) }),
+    [],
+    EMPTY_CONTEXT,
+  );
+  assert.equal(resolved.note.length, 1_000);
+  assert.equal(resolved.status === "ask" && resolved.question.length, 500);
+  assert.equal(resolved.status === "ask" && resolved.rationale.length, 500);
+});
+
 test("stop request detection", () => {
-  for (const answer of ["stop", "Proceed.", "generate plan", "Create the shot plan", "done"]) {
+  for (const answer of [
+    "stop",
+    "Please stop asking questions",
+    "Please stop asking and generate the plan",
+    "Proceed.",
+    "Proceed with the plan",
+    "generate plan",
+    "Create the shot plan",
+    "done",
+  ]) {
     assert.equal(isStopRequest(said("A thriller.", answer)), true, answer);
   }
   for (const answer of ["the bus doesn't stop at night", "Stop the car, she says.", "A thriller."]) {

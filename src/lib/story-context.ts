@@ -145,7 +145,7 @@ export function toCollected(context: StoryContext, max = 40): { label: string; d
 
 export type DiscoveryCommand = "stop" | "skip" | "decide";
 
-const STOP = /^(stop|stop here|stop asking|proceed|go ahead|done|enough|that'?s enough|let'?s go|start planning|(generate|create|make|build)( the| my)?( shot)? plan( now)?)$/;
+const STOP = /^(?:please )?(?:stop(?: (?:here|asking(?: (?:questions?|now))?(?: and (?:generate|create|make|build)(?: the| my)?(?: shot)? plan(?: now)?)?|the (?:questions?|interview)))?|proceed(?: with)?(?: (?:the|my))? (?:shot )?plan(?:ning)?|go ahead(?: with)?(?: (?:the|my))? (?:shot )?plan(?:ning)?|proceed|go ahead|done|enough|that'?s enough|let'?s go|start planning|(generate|create|make|build)( the| my)?( shot)? plan( now)?)$/;
 const SKIP = /^(skip|skip (this|it|this one)|next|pass|next question)$/;
 const DECIDE = /^(you decide|your call|up to you|you choose|decide for me|surprise me|i don'?t know|no idea|any)$/;
 

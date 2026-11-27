@@ -82,16 +82,16 @@ export function resolveInterviewTurn(
     mergeFacts(context, updates),
     output.unresolved.map((item) => clip(item, 300)),
   );
-  const state = { note: output.note, context: merged, collected: toCollected(merged) };
+  const state = { note: clip(output.note, 1_000), context: merged, collected: toCollected(merged) };
 
-  const question = output.question.trim();
+  const question = clip(output.question, 500);
   const askedBefore = new Set(answered.map((exchange) => normalizeQuestion(exchange.question)));
   const isDuplicate = question.length > 0 && askedBefore.has(normalizeQuestion(question));
   const capReached = answered.length >= maxTurns;
 
   if (output.complete || question.length === 0 || isDuplicate || capReached) {
-    return { status: "complete", recommendation: output.recommendation.trim() || DEFAULT_RECOMMENDATION, ...state };
+    return { status: "complete", recommendation: clip(output.recommendation, 600) || DEFAULT_RECOMMENDATION, ...state };
   }
 
-  return { status: "ask", question, rationale: output.rationale, ...state };
+  return { status: "ask", question, rationale: clip(output.rationale, 500), ...state };
 }

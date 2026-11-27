@@ -170,6 +170,18 @@ export function StudioApp() {
       await createPlan(session, stopMessage, fromComposer ? text : "");
       return;
     }
+    if (session.readyToPlan && !session.pendingQuestion) {
+      const userMessage: ChatMessage = { id: newId(), role: "user", text };
+      const nextAnswered = [...session.answered, { question: "Additional direction", answer: text }];
+      store.update(session.id, (current) => ({
+        ...current,
+        messages: [...current.messages, userMessage],
+        answered: nextAnswered,
+      }));
+      if (fromComposer) setInput("");
+      await createPlan({ ...session, answered: nextAnswered }, undefined, fromComposer ? text : "");
+      return;
+    }
     const answer = answerFor(command, text);
     const userMessage: ChatMessage = {
       id: newId(),
