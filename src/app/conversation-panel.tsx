@@ -5,6 +5,7 @@ import { VoiceRecorder } from "./voice-recorder";
 import { type ImageReference, type Recommendation, SPECIALIST_LABELS, type SpecialistId } from "@/lib/agents/types";
 import { AUDIO_ACCEPT } from "@/lib/audio";
 import { formatReply } from "@/lib/format-reply";
+import { proposalConfirmation } from "@/lib/proposal-copy";
 import { DISCOVERY_ACTIONS, QUICK_ACTIONS } from "@/lib/quick-actions";
 import { MAX_ANSWER_CHARACTERS, MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
 import type { ChatMessage, StorySession } from "@/lib/session";
@@ -141,6 +142,34 @@ function ReferenceNotes({ reference }: { reference: ImageReference }) {
   );
 }
 
+function latestAgentMessage(messages: ChatMessage[]): ChatMessage | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    if (messages[index].role === "agent") return messages[index];
+  }
+  return undefined;
+}
+
+function AnswerOptions({
+  options,
+  disabled,
+  onPick,
+}: {
+  options: string[];
+  disabled: boolean;
+  onPick: (option: string) => void;
+}) {
+  return (
+    <fieldset className="answer-options">
+      <legend className="sr-only">Suggested answers — pick one or type your own</legend>
+      {options.map((option) => (
+        <button key={option} className="quick-action answer-option" type="button" disabled={disabled} onClick={() => onPick(option)}>
+          {option}
+        </button>
+      ))}
+    </fieldset>
+  );
+}
+
 function UserBubble({
   message,
   canEdit,
@@ -213,24 +242,28 @@ function UserBubble({
   return (
     <div className="chat-bubble chat-user">
       <p>{message.text}</p>
-      {(edited || (canEdit && !busy)) && (
+      {edited && (
         <div className="chat-user-meta">
-          {edited && <span className="chat-edited">edited</span>}
-          {canEdit && !busy && (
-            <button
-              ref={editButtonRef}
-              className="chat-edit-btn"
-              type="button"
-              aria-label="Edit this answer"
-              onClick={() => {
-                setDraft(message.text);
-                setEditing(true);
-              }}
-            >
-              Edit
-            </button>
-          )}
+          <span className="chat-edited">edited</span>
         </div>
+      )}
+      {canEdit && !busy && (
+        <button
+          ref={editButtonRef}
+          className="chat-edit-btn"
+          type="button"
+          aria-label="Edit this answer"
+          title="Edit this answer"
+          onClick={() => {
+            setDraft(message.text);
+            setEditing(true);
+          }}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+          </svg>
+        </button>
       )}
     </div>
   );
@@ -250,6 +283,7 @@ export function ConversationPanel({
   onSend,
   onQuickAction,
   onDiscoveryAction,
+  onAnswerOption,
   onGeneratePlan,
   onAccept,
   onReject,
@@ -272,6 +306,7 @@ export function ConversationPanel({
   onSend: () => void;
   onQuickAction: (message: string) => void;
   onDiscoveryAction: (label: string) => void;
+  onAnswerOption: (option: string) => void;
   onGeneratePlan: () => void;
   onAccept: (message: ChatMessage) => void;
   onReject: (id: string) => void;
@@ -306,6 +341,9 @@ export function ConversationPanel({
 
   const showEmptyRetry = session.messages.length === 0 && !busy;
   const discovery = session.phase === "discovery";
+  const latestAgent = latestAgentMessage(session.messages);
+  const optionsMessageId =
+    discovery && session.pendingQuestion && !busy && latestAgent?.options?.length ? latestAgent.id : null;
 
   function saveAnswer(messageId: string, text: string): boolean {
     const saved = onEditAnswer(messageId, text);
@@ -373,6 +411,13 @@ export function ConversationPanel({
                 )}
                 <ReplyText text={message.text} />
                 {message.suggestion && <p className="muted chat-suggestion">{message.suggestion}</p>}
+                {message.id === optionsMessageId && message.options && (
+                  <AnswerOptions
+                    options={message.options}
+                    disabled={transcribing || uploading !== null}
+                    onPick={onAnswerOption}
+                  />
+                )}
                 {message.reference && <ReferenceNotes reference={message.reference} />}
                 <TeamNotes message={message} />
                 {message.changeSummary && message.changeSummary.length > 0 && (
@@ -384,14 +429,24 @@ export function ConversationPanel({
                   </ul>
                 )}
                 {message.status === "pending" ? (
-                  <div className="chat-proposal-actions">
-                    <button className="button" type="button" onClick={() => onAccept(message)}>
-                      Apply to story
-                    </button>
-                    <button className="button secondary" type="button" onClick={() => onReject(message.id)}>
-                      Discard
-                    </button>
-                  </div>
+                  <>
+                    <p className="chat-confirm" id={`confirm-${message.id}`}>
+                      {proposalConfirmation(message.changeSummary)}
+                    </p>
+                    <div className="chat-proposal-actions">
+                      <button
+                        className="button"
+                        type="button"
+                        aria-describedby={`confirm-${message.id}`}
+                        onClick={() => onAccept(message)}
+                      >
+                        Apply to story
+                      </button>
+                      <button className="button secondary" type="button" onClick={() => onReject(message.id)}>
+                        Discard
+                      </button>
+                    </div>
+                  </>
                 ) : message.status ? (
                   <p className={`chat-status chat-status-${message.status}`}>
                     {message.status === "accepted" ? "Added to your story" : "Discarded"}
@@ -403,7 +458,7 @@ export function ConversationPanel({
         )}
         {busy && (
           <p className="muted chat-busy" role="status">
-            {busyText ?? (discovery ? "The creative director is thinking…" : "Asking the film experts…")}
+            {busyText ?? (discovery ? "The creative director is thinking…" : "Working on your request…")}
           </p>
         )}
         <div ref={logEnd} />
@@ -485,7 +540,7 @@ export function ConversationPanel({
                 <path d="M21.44 11.05 12.25 20.24a5 5 0 0 1-7.07-7.07l9.19-9.19a3 3 0 0 1 4.24 4.24l-9.2 9.19a1 1 0 0 1-1.41-1.41l8.49-8.49" />
               </svg>
             </button>
-            <VoiceRecorder onActiveChange={onVoiceActive} onRecording={onVoice} />
+            <VoiceRecorder busy={busy} onActiveChange={onVoiceActive} onRecording={onVoice} />
           </div>
           <button
             className="button"

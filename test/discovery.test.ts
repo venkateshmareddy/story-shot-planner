@@ -29,6 +29,7 @@ function turn(overrides: Partial<InterviewTurnOutput> = {}): InterviewTurnOutput
     note: "Clear premise.",
     complete: false,
     question: "Who is the main character?",
+    options: [],
     rationale: "The audience needs someone to follow.",
     recommendation: "",
     facts: [],
@@ -234,16 +235,21 @@ test("interview prompt builds on the latest answer without demanding a rationale
   assert.ok(prompt.includes("Build the next question on the filmmaker's latest answer"));
   assert.ok(prompt.includes("never re-ask an earlier question in different words"));
   assert.ok(prompt.includes("ask only the most important one now"));
-  assert.ok(prompt.includes("offer 2–3 concrete options"));
+  assert.ok(prompt.includes("Put 2–4 short answer choices that fit this story in options, never inside the question"));
+  assert.ok(!prompt.includes("offer 2–3 concrete options"));
   assert.ok(prompt.includes("Never ask for anything already known, answered or reasonably inferable"));
   assert.ok(!prompt.includes("a rationale saying why it helps the film"));
   assert.ok(!prompt.includes("Put your short read of the latest answer in note"));
 });
 
-test("plan prompt binds user/approved facts and lists assumptions", () => {
-  const prompt = composeInstructions("plan", "short_film");
-  assert.ok(prompt.includes(PLAIN_LANGUAGE));
-  assert.ok(prompt.includes("approved true as binding"));
-  assert.ok(prompt.includes("assumptions in reviewNotes"));
-  assert.ok(prompt.includes("original dialogue"));
+test("plan prompts bind user/approved facts, list assumptions and allow original dialogue", () => {
+  const outline = composeInstructions("plan_outline", "short_film");
+  assert.ok(outline.includes(PLAIN_LANGUAGE));
+  assert.ok(outline.includes("approved true as binding"));
+  assert.ok(outline.includes("assumptions in reviewNotes"));
+  assert.ok(outline.includes("context.removed"));
+  const scene = composeInstructions("plan_scene", "short_film");
+  assert.ok(scene.includes(PLAIN_LANGUAGE));
+  assert.ok(scene.includes("original dialogue"));
+  assert.ok(scene.includes("binding"));
 });

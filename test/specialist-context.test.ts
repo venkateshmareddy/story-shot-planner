@@ -2,11 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { type CallModel, type DirectorDeps, type ModelCall, runDirector, SPECIALISTS } from "../src/lib/agents/orchestrator.ts";
 import { directorRequest } from "../src/lib/agents/schemas.ts";
-import { MAX_SPECIALIST_FACTS, specialistContext, specialistInstructions } from "../src/lib/agents/shared.ts";
+import {
+  MAX_SPECIALIST_FACTS,
+  SPECIALIST_MAX_OUTPUT_TOKENS,
+  specialistContext,
+  specialistInstructions,
+} from "../src/lib/agents/shared.ts";
 import type { DecisionRecord, DirectorRequest, SpecialistId } from "../src/lib/agents/types.ts";
-import { ANALYSIS_STYLE, DIRECTOR_PERSONA, PLAIN_LANGUAGE, SOURCE_RULES } from "../src/lib/server/prompts.ts";
+import { ANALYSIS_STYLE, DIRECTOR_PERSONA, PLAIN_LANGUAGE, SOURCE_RULES, SOURCE_STORY_RULE } from "../src/lib/server/prompts.ts";
 import type { ContextFact, StoryContext } from "../src/lib/story-context.ts";
-import type { RefineRequest, ShotPlan } from "../src/lib/story-planning.ts";
+import { MAX_REFINE_SOURCE_CHARACTERS, type RefineRequest, type ShotPlan } from "../src/lib/story-planning.ts";
 import type { UsageRecord, UsageStep } from "../src/lib/usage.ts";
 
 type Fact = ContextFact;
@@ -18,6 +23,7 @@ type SpecialistInput = {
   context?: { facts: SentFact[]; openQuestions: string[] };
   approved?: unknown;
   decisions: DecisionRecord[];
+  source?: string;
   plan: unknown;
 };
 
@@ -130,7 +136,7 @@ function fakeTeam(recommendations = 1) {
     callModel,
     refine: async (input) => {
       refined.push(structuredClone(input));
-      return { reply: "Refined.", changeSummary: [], plan: input.plan, usage: usageFor("refine") };
+      return { reply: "Refined.", changeSummary: [], plan: input.plan, changed: false, usage: [usageFor("refine")] };
     },
   };
   const inputOf = (id: SpecialistId) => {
@@ -218,7 +224,7 @@ test("the last six decisions reach every specialist with rejected ones marked", 
   }
 });
 
-test("decisions pass through to the full and the scene-scoped refine", async () => {
+test("decisions pass through to the plan edit, with or without named scenes", async () => {
   for (const message of ["Rename Elias to Tom", "In scene 2, have a postman deliver the letter"]) {
     const team = fakeTeam();
     const result = await runDirector(request(message, { decisions: DECISIONS }), team.deps);
@@ -265,14 +271,15 @@ test("specialist and synthesis instructions inherit the Creative Director person
   assert.equal(synthesis.maxOutputTokens, 1_200);
 });
 
-test("budgets: specialist output caps are raised modestly", () => {
+test("budgets: every specialist shares one bounded output cap", () => {
+  assert.equal(SPECIALIST_MAX_OUTPUT_TOKENS, 2_800);
   const caps = Object.fromEntries(Object.values(SPECIALISTS).map(({ id, maxOutputTokens }) => [id, maxOutputTokens]));
   assert.deepEqual(caps, {
-    "story-analyst": 1_800,
-    "cinematography-director": 1_800,
-    "sound-director": 1_500,
-    "editing-director": 1_500,
-    "continuity-reviewer": 1_800,
+    "story-analyst": 2_800,
+    "cinematography-director": 2_800,
+    "sound-director": 2_800,
+    "editing-director": 2_800,
+    "continuity-reviewer": 2_800,
   });
 });
 
@@ -351,4 +358,44 @@ test("director request schema accepts context and decisions within limits", () =
   assert.ok(!directorRequest.safeParse({ ...base, decisions: [{ ...DECISIONS[0], status: "maybe" }] }).success);
   const badFact = { ...CONTEXT.facts[0], category: "budget" };
   assert.ok(!directorRequest.safeParse({ ...base, context: { ...CONTEXT, facts: [badFact] } }).success);
+});
+
+const SOURCE = "Imported story:\nElias finds a letter from his late wife. \"I kept every word,\" he says.";
+
+test("the imported story reaches only the Story and Consistency experts", async () => {
+  const team = fakeTeam();
+  await runDirector(request(REVIEW, { source: SOURCE }), team.deps);
+  for (const id of Object.keys(SPECIALISTS) as SpecialistId[]) {
+    const reads = id === "story-analyst" || id === "continuity-reviewer";
+    assert.equal(team.inputOf(id).source, reads ? SOURCE : undefined, id);
+    assert.equal(SPECIALISTS[id].instructions.includes(SOURCE_STORY_RULE), reads, id);
+  }
+  const synthesis = team.calls.find(({ step }) => step === "orchestrator");
+  assert.ok(synthesis && !synthesis.input.includes("I kept every word"));
+  const without = fakeTeam();
+  await runDirector(request(REVIEW), without.deps);
+  assert.ok(!("source" in without.inputOf("story-analyst")));
+});
+
+test("the imported story passes through to the plan edit, with or without named scenes", async () => {
+  for (const message of ["Rename Elias to Tom", "In scene 2, have a postman deliver the letter"]) {
+    const team = fakeTeam();
+    await runDirector(request(message, { source: SOURCE, decisions: DECISIONS }), team.deps);
+    assert.equal(team.refined.length, 1, message);
+    assert.equal(team.refined[0].source, SOURCE, message);
+    assert.deepEqual(team.refined[0].decisions, DECISIONS, message);
+  }
+  const team = fakeTeam();
+  await runDirector(request("Rename Elias to Tom"), team.deps);
+  assert.ok(!("source" in team.refined[0]));
+});
+
+test("director request schema accepts a source up to the refine limit", () => {
+  const base = request(REVIEW);
+  const parsed = directorRequest.safeParse({ ...base, source: `  ${SOURCE}  ` });
+  assert.ok(parsed.success);
+  assert.equal(parsed.data.source, SOURCE);
+  assert.ok(directorRequest.safeParse({ ...base, source: "x".repeat(MAX_REFINE_SOURCE_CHARACTERS) }).success);
+  assert.ok(!directorRequest.safeParse({ ...base, source: "x".repeat(MAX_REFINE_SOURCE_CHARACTERS + 1) }).success);
+  assert.ok(!directorRequest.safeParse({ ...base, source: 42 }).success);
 });

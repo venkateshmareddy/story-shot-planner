@@ -1,15 +1,14 @@
 import OpenAI from "openai";
-import { zodTextFormat } from "openai/helpers/zod";
-import { type CallModel, DirectorError, ModelOutputError, runDirector } from "@/lib/agents/orchestrator";
+import { DirectorError, directorFailureMessage, runDirector } from "@/lib/agents/orchestrator";
 import { directorRequest } from "@/lib/agents/schemas";
 import type { DirectorResponse } from "@/lib/agents/types";
-import { getOpenAI, jsonError, modelError, STORY_MODEL } from "@/lib/server/openai";
+import { createModelCaller, getOpenAI, jsonError, modelError } from "@/lib/server/openai";
 import { readBody } from "@/lib/server/read-body";
 import { INVALID_REFINED_PLAN_MESSAGE, InvalidRefinedPlanError, runRefine } from "@/lib/server/refine";
-import { toUsageRecord } from "@/lib/usage";
 
 export const runtime = "nodejs";
-export const maxDuration = 100;
+// Worst case is a plan edit: decision (60 s) then parallel scene rewrites (100 s); specialists (90 s) + synthesis (30 s) is shorter.
+export const maxDuration = 180;
 
 const ACCOUNT_ERROR_STATUSES = new Set([401, 403, 404, 429]);
 
@@ -29,32 +28,20 @@ export async function POST(request: Request) {
   const client = getOpenAI();
   if (!client) return jsonError("Add OPENAI_API_KEY to the server’s .env file to use AI planning.", 503);
 
-  const callModel: CallModel = async ({ step, instructions, input, schema, maxOutputTokens, signal }) => {
-    const response = await client.responses.parse(
-      {
-        model: STORY_MODEL,
-        store: false,
-        instructions,
-        input,
-        max_output_tokens: maxOutputTokens,
-        text: { format: zodTextFormat(schema, step) },
-      },
-      { signal },
-    );
-    const model = response.model || STORY_MODEL;
-    const usage = toUsageRecord(step, model, response.usage);
-    console.info("Model usage", { step, model, usage });
-    if (response.status !== "completed" || !response.output_parsed) {
-      throw new ModelOutputError("Incomplete model result", usage);
-    }
-    return { output: response.output_parsed, usage };
-  };
+  const callModel = createModelCaller(client);
 
   try {
     const result: DirectorResponse = await runDirector(
       parsed.data,
-      { callModel, refine: (input) => runRefine(client, input) },
-      { signal: request.signal },
+      {
+        callModel,
+        refine: (input) =>
+          runRefine(callModel, input, {
+            signal: request.signal,
+            onFailure: (failure) => console.warn("Plan edit call failed", failure),
+          }),
+      },
+      { signal: request.signal, onSpecialistFailure: (failure) => console.warn("Specialist failed", failure) },
     );
     console.info("Creative director", {
       mode: result.mode,
@@ -70,9 +57,12 @@ export async function POST(request: Request) {
       );
       if (accountError) return modelError(accountError, "director");
       console.warn("Creative team failed", { failed: error.failed });
-      return jsonError("The creative team couldn’t respond. Try again.", 502);
+      return jsonError(directorFailureMessage(error.failed), 502);
     }
-    if (error instanceof InvalidRefinedPlanError) return jsonError(INVALID_REFINED_PLAN_MESSAGE, 502);
+    if (error instanceof InvalidRefinedPlanError) {
+      console.warn("Plan edit rejected", { reason: error.reason });
+      return jsonError(INVALID_REFINED_PLAN_MESSAGE, 502);
+    }
     return modelError(error, "director");
   }
 }

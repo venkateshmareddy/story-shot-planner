@@ -1,21 +1,18 @@
 "use client";
 
-import { Fragment, type KeyboardEvent, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type KeyboardEvent, useCallback, useEffect, useId, useRef, useState } from "react";
 import { buildBlueprint, canExportFinal } from "@/lib/blueprint";
 import type { StorySession } from "@/lib/session";
 import styles from "./export-menu.module.css";
 
 type ExportFormat = "pdf" | "docx";
-type ExportOption = { label: string; final: boolean; format: ExportFormat };
+type ExportOption = { label: string; format: ExportFormat };
 
 const OPTIONS: ExportOption[] = [
-  { label: "Draft PDF", final: false, format: "pdf" },
-  { label: "Draft Word (.docx)", final: false, format: "docx" },
-  { label: "Final PDF", final: true, format: "pdf" },
-  { label: "Final Word (.docx)", final: true, format: "docx" },
+  { label: "PDF", format: "pdf" },
+  { label: "Word (.docx)", format: "docx" },
 ];
 
-const CONFIRM_FINAL = "Export the final blueprint? It will be marked FINAL with today's date.";
 const MIME: Record<ExportFormat, string> = {
   pdf: "application/pdf",
   docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -36,8 +33,9 @@ function slug(title: string): string {
 }
 
 async function renderFile(session: StorySession, option: ExportOption): Promise<{ blob: Blob; filename: string }> {
-  const blueprint = buildBlueprint(session, { final: option.final, date: new Date() });
-  const filename = `${slug(blueprint.title)}-blueprint-${option.final ? "final" : "draft"}.${option.format}`;
+  const final = canExportFinal(session);
+  const blueprint = buildBlueprint(session, { final, date: new Date() });
+  const filename = `${slug(blueprint.title)}-blueprint-${final ? "final" : "draft"}.${option.format}`;
   if (option.format === "pdf") {
     const { blueprintToPdf } = await import("@/lib/export/pdf");
     const bytes = await blueprintToPdf(blueprint);
@@ -70,8 +68,6 @@ export function ExportMenu({ session }: ExportMenuProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const menuId = useId();
-  const hintId = useId();
-  const finalReady = canExportFinal(session);
 
   const close = useCallback((restoreFocus: boolean) => {
     setOpen(false);
@@ -122,7 +118,6 @@ export function ExportMenu({ session }: ExportMenuProps) {
 
   const runExport = async (option: ExportOption) => {
     if (busy) return;
-    if (option.final && (!finalReady || !window.confirm(CONFIRM_FINAL))) return;
     close(true);
     setError(null);
     setBusy(`Preparing ${option.label}…`);
@@ -160,26 +155,17 @@ export function ExportMenu({ session }: ExportMenuProps) {
           className={styles.menu}
           onKeyDown={onMenuKeyDown}
         >
-          {OPTIONS.map((option, index) => (
-            <Fragment key={option.label}>
-              {index > 0 && option.final !== OPTIONS[index - 1].final && <hr className={styles.separator} />}
-              <button
-                type="button"
-                role="menuitem"
-                className={styles.item}
-                disabled={option.final && !finalReady}
-                aria-describedby={option.final && !finalReady ? hintId : undefined}
-                onClick={() => void runExport(option)}
-              >
-                {option.label}
-              </button>
-            </Fragment>
+          {OPTIONS.map((option) => (
+            <button
+              key={option.label}
+              type="button"
+              role="menuitem"
+              className={styles.item}
+              onClick={() => void runExport(option)}
+            >
+              {option.label}
+            </button>
           ))}
-          {!finalReady && (
-            <p id={hintId} className={styles.hint}>
-              Final export unlocks once the shot plan has at least one shot. Drafts work at any stage.
-            </p>
-          )}
         </div>
       )}
       <p role="status" className={styles.status}>

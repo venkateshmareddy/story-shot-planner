@@ -28,6 +28,8 @@ export type ChatMessage = {
   status?: "pending" | "accepted" | "rejected";
   /** Signature of the plan the proposal was built from; Apply confirms if the plan changed since. */
   baseSignature?: string;
+  /** On a discovery question: short answer choices shown as tappable buttons. */
+  options?: string[];
   /** On a user message: index into `answered` that this message answered (enables editing). */
   answerIndex?: number;
   /** On a Creative Director reply: specialists consulted, their recommendations and any conflicts. */

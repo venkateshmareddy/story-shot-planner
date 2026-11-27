@@ -18,12 +18,16 @@ import {
 } from "@/lib/ideas";
 import { IDEA_INPUT_LIMITS } from "@/lib/ideas-flow";
 import type { CollectedItem, ResolvedInterviewTurn } from "@/lib/interview";
-import { newId } from "@/lib/session";
+import { readPdfText } from "@/lib/pdf-text";
+import { answerFor } from "@/lib/quick-actions";
+import { newId, type StorySession } from "@/lib/session";
 import {
   checkSourceText,
   decodeTextFile,
   type DigestResponse,
   MAX_DIGEST_CHARACTERS,
+  type StorySource,
+  storyForStep,
 } from "@/lib/source-text";
 import {
   BYTES_PER_MB,
@@ -34,15 +38,19 @@ import {
   MAX_VOICE_BYTES,
 } from "@/lib/story-input";
 import {
+  detectDiscoveryCommand,
   EMPTY_CONTEXT,
   MAX_CONTEXT_FACTS,
+  MAX_REMOVED_FACTS,
   MAX_UNRESOLVED,
   type ContextFact,
+  type RemovedFact,
+  retractAnswerFacts,
   type StoryContext,
   toCollected,
 } from "@/lib/story-context";
-import { contextFactSchema } from "@/lib/story-context-schema";
-import { MAX_DECISIONS, type ShotPlan } from "@/lib/story-planning";
+import { contextFactSchema, removedFactSchema } from "@/lib/story-context-schema";
+import { MAX_DECISIONS, MAX_REFINE_SOURCE_CHARACTERS, type ShotPlan } from "@/lib/story-planning";
 import { documentExtensionOf, imageTypeOf, UNSUPPORTED_UPLOAD } from "@/lib/upload";
 import { isUsageRecord, type UsageRecord } from "@/lib/usage";
 
@@ -89,14 +97,47 @@ export function parseStoryContext(value: unknown): StoryContext | null {
     .filter((item): item is string => typeof item === "string" && item.trim() !== "")
     .map((item) => item.trim().slice(0, 300))
     .slice(0, MAX_UNRESOLVED);
-  return { facts, unresolved };
+  const removed = Array.isArray(record.removed)
+    ? record.removed
+        .map((item) => removedFactSchema.safeParse(item))
+        .filter((parsed) => parsed.success)
+        .map((parsed) => parsed.data as RemovedFact)
+        .slice(-MAX_REMOVED_FACTS)
+    : [];
+  return removed.length > 0 ? { facts, unresolved, removed } : { facts, unresolved };
 }
+
+/** The filmmaker's removals are client memory; keep them if a reply's context comes back without them. */
+export function adoptReturnedContext(previous: StoryContext | undefined, returned: StoryContext): StoryContext {
+  if (returned.removed?.length || !previous?.removed?.length) return returned;
+  return { ...returned, removed: previous.removed };
+}
+
+export const MAX_ANSWER_OPTIONS = 4;
+export const MAX_ANSWER_OPTION_CHARACTERS = 80;
+
+/** Short tappable answers for a discovery question; anything outside the contract shows none. */
+export function parseAnswerOptions(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length > MAX_ANSWER_OPTIONS) return [];
+  const valid = value.every(
+    (item) => typeof item === "string" && item.trim() !== "" && item.trim().length <= MAX_ANSWER_OPTION_CHARACTERS,
+  );
+  if (!valid) return [];
+  const options: string[] = [];
+  for (const item of value as string[]) {
+    const option = item.trim();
+    if (!options.some((existing) => existing.toLowerCase() === option.toLowerCase())) options.push(option);
+  }
+  return options;
+}
+
+export type InterviewReply = { turn: ResolvedInterviewTurn; context?: StoryContext; options: string[] } & WithUsage;
 
 export async function askInterview(
   story: string,
   answered: { question: string; answer: string }[],
   context?: StoryContext,
-): Promise<AgentResult<{ turn: ResolvedInterviewTurn; context?: StoryContext } & WithUsage>> {
+): Promise<AgentResult<InterviewReply>> {
   const result = await postJson("/api/story/plan", { step: "interview", story, answered, context });
   if (!result.ok) return result;
   const { data } = result;
@@ -107,6 +148,7 @@ export async function askInterview(
     ok: true,
     turn: data as unknown as ResolvedInterviewTurn,
     context: parseStoryContext(data.context) ?? undefined,
+    options: data.status === "ask" ? parseAnswerOptions(data.options) : [],
     usage: pickUsage(data),
   };
 }
@@ -116,6 +158,38 @@ const MAX_PLAN_COLLECTED = 80;
 
 export function directorCollected(context: StoryContext | undefined, collected: CollectedItem[]): CollectedItem[] {
   return context ? toCollected(context, MAX_COLLECTED_ITEMS) : collected.slice(0, MAX_COLLECTED_ITEMS);
+}
+
+/** Apply a context change and keep `collected` (the flattened context) in step with it. */
+export function withSessionContext(session: StorySession, change: (context: StoryContext) => StoryContext): StorySession {
+  if (!session.context) return session;
+  const context = change(session.context);
+  return context === session.context ? session : { ...session, context, collected: toCollected(context) };
+}
+
+/**
+ * Rewrite an earlier answer without a model call. The filmmaker facts taken from it are retracted so the next
+ * turn re-reads the new wording. Null when the message isn't an editable answer or the text is empty.
+ */
+export function withEditedAnswer(session: StorySession, messageId: string, value: string): StorySession | null {
+  const text = value.trim().slice(0, MAX_ANSWER_CHARACTERS);
+  if (!text) return null;
+  const index = session.messages.find((message) => message.id === messageId)?.answerIndex;
+  if (index === undefined || !session.answered[index]) return null;
+  const answer = answerFor(detectDiscoveryCommand(text), text);
+  const edited: StorySession = {
+    ...session,
+    answered: session.answered.map((item, position) => (position === index ? { ...item, answer } : item)),
+    messages: session.messages.map((message) => (message.id === messageId ? { ...message, text } : message)),
+  };
+  return withSessionContext(edited, (context) => retractAnswerFacts(context, index));
+}
+
+/** The imported story (or its digest) under its heading, for the creative team; omitted when it can't be sent whole. */
+export function directorSource(title: string, source: StorySource | undefined): string | undefined {
+  if (!source) return undefined;
+  const story = storyForStep(title, source, "interview");
+  return story.ok && story.story.length <= MAX_REFINE_SOURCE_CHARACTERS ? story.story : undefined;
 }
 
 export async function generatePlan(
@@ -169,8 +243,10 @@ function isShotPlan(value: unknown): value is ShotPlan {
   return typeof record.title === "string" && Array.isArray(record.scenes);
 }
 
-export async function askDirector(request: DirectorRequest): Promise<AgentResult<{ response: DirectorResponse }>> {
-  const body: DirectorRequest = {
+export type DirectorAsk = DirectorRequest & { source?: string };
+
+export async function askDirector(request: DirectorAsk): Promise<AgentResult<{ response: DirectorResponse }>> {
+  const body: DirectorAsk = {
     plan: request.plan,
     messages: request.messages
       .map((item) => ({ role: item.role, text: item.text.slice(0, MAX_CHAT_MESSAGE_CHARACTERS) }))
@@ -182,6 +258,7 @@ export async function askDirector(request: DirectorRequest): Promise<AgentResult
     references: request.references?.length ? request.references.slice(-MAX_REFERENCES) : undefined,
     context: request.context,
     decisions: request.decisions?.slice(-MAX_DECISIONS),
+    source: request.source && request.source.length <= MAX_REFINE_SOURCE_CHARACTERS ? request.source : undefined,
   };
   const result = await postJson("/api/story/director", body);
   if (!result.ok) return result;
@@ -210,33 +287,22 @@ export type ImportedDocument = { text: string; characters: number; pages?: numbe
 export async function importDocument(file: File): Promise<AgentResult<ImportedDocument>> {
   const extension = documentExtensionOf(file.name);
   if (!extension) return { ok: false, error: UNSUPPORTED_UPLOAD };
-  const limit = MAX_UPLOAD_MB[extension];
-  if (file.size > limit * BYTES_PER_MB) {
-    return { ok: false, error: `Choose a file that is ${limit} MB or smaller.` };
-  }
-  if (file.size === 0) return { ok: false, error: "That file looks empty." };
   const label = `“${file.name}”`;
+  if (file.size === 0) return { ok: false, error: "That file looks empty." };
   try {
-    if (extension === "txt") {
-      const decoded = decodeTextFile(new Uint8Array(await file.arrayBuffer()));
-      if (!decoded.ok) return decoded;
-      const checked = checkSourceText(decoded.text, label);
-      if (!checked.ok) return checked;
-      return { ok: true, text: checked.text, characters: checked.text.length };
+    if (extension === "pdf") {
+      const pdf = await readPdfText(file, label);
+      if (!pdf.ok) return pdf;
+      return { ok: true, text: pdf.text, characters: pdf.text.length, pages: pdf.pages };
     }
-    const response = await fetch("/api/story/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/pdf" },
-      body: file,
-    });
-    const result = (await response.json()) as Record<string, unknown>;
-    if (!response.ok || typeof result.text !== "string") {
-      return { ok: false, error: typeof result.error === "string" ? result.error : "The file couldn’t be imported." };
+    if (file.size > MAX_UPLOAD_MB.txt * BYTES_PER_MB) {
+      return { ok: false, error: `Choose a file that is ${MAX_UPLOAD_MB.txt} MB or smaller.` };
     }
-    const checked = checkSourceText(result.text, label);
+    const decoded = decodeTextFile(new Uint8Array(await file.arrayBuffer()));
+    if (!decoded.ok) return decoded;
+    const checked = checkSourceText(decoded.text, label);
     if (!checked.ok) return checked;
-    const pages = typeof result.pages === "number" && Number.isInteger(result.pages) && result.pages > 0 ? result.pages : undefined;
-    return { ok: true, text: checked.text, characters: checked.text.length, pages };
+    return { ok: true, text: checked.text, characters: checked.text.length };
   } catch {
     return { ok: false, error: "The file couldn’t be imported. Try again or paste the text." };
   }

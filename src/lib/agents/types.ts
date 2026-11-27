@@ -63,6 +63,8 @@ export type DirectorRequest = {
   context?: StoryContext;
   /** Earlier proposals the filmmaker applied or discarded, newest last. Rejected ideas must not be re-proposed unless asked. */
   decisions?: DecisionRecord[];
+  /** The filmmaker's imported story (or its digest), headed by the client. The Story and Consistency experts and refine use it. */
+  source?: string;
 };
 
 /** One resolved proposal: what was asked, what changed, and whether the filmmaker applied or discarded it. */

@@ -409,7 +409,7 @@ test("interview and plan treat an AI-suggested starting concept as a suggestion"
   assert.ok(SUGGESTED_CONCEPT_RULE.includes('"AI-suggested starting concept"'));
   assert.ok(SUGGESTED_CONCEPT_RULE.includes("source ai"));
   const interview = composeInstructions("interview", "short_film");
-  const plan = composeInstructions("plan", "short_film");
+  const plan = composeInstructions("plan_outline", "short_film");
   for (const composed of [interview, plan]) assert.ok(composed.includes(SUGGESTED_CONCEPT_RULE));
   assert.ok(interview.includes("Use discovery to let the filmmaker confirm or change its key parts"));
   assert.ok(plan.includes("so they can confirm or change them"));

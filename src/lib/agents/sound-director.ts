@@ -1,6 +1,12 @@
 import type { ShotPlan } from "@/lib/story-planning";
 import { specialistOutput } from "./schemas";
-import { clip, type SpecialistDefinition, shotId, specialistInstructions } from "./shared";
+import {
+  clip,
+  SPECIALIST_MAX_OUTPUT_TOKENS,
+  type SpecialistDefinition,
+  shotId,
+  specialistInstructions,
+} from "./shared";
 
 const fields = ["sound"] as const;
 
@@ -10,7 +16,7 @@ export const soundDirector: SpecialistDefinition = {
   fields,
   contextCategories: ["sound", "dialogue", "locations", "genre", "intent"],
   schema: specialistOutput(fields),
-  maxOutputTokens: 1_500,
+  maxOutputTokens: SPECIALIST_MAX_OUTPUT_TOKENS,
   instructions: specialistInstructions(
     "Sound Director",
     "You think like a professional sound designer and music supervisor: the soundtrack should carry emotion, place and transitions, and you flag where sound should lead or contrast the picture.",

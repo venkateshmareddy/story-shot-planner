@@ -13,6 +13,12 @@ test("quick actions have unique, non-empty labels and messages", () => {
   }
 });
 
+test("quick actions ask for the most important points, not every shot or scene", () => {
+  for (const action of QUICK_ACTIONS) {
+    assert.doesNotMatch(action.message, /\b(?:each|every|all)\s+(?:of\s+)?(?:the\s+)?(?:shots?|scenes?)\b/i, action.label);
+  }
+});
+
 for (const action of QUICK_ACTIONS) {
   test(`"${action.label}" routes to its intended specialists`, () => {
     const expected = action.specialists === "all" ? [...SPECIALIST_IDS] : [...action.specialists];

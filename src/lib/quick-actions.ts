@@ -11,32 +11,37 @@ export type QuickAction = {
 export const QUICK_ACTIONS: readonly QuickAction[] = [
   {
     label: "Story check",
-    message: "Check the story structure, the characters and the conflict.",
+    message:
+      "Check that the story is easy to follow and that the characters and their main problem are clear. Just the most important fixes.",
     specialists: ["story-analyst"],
   },
   {
     label: "Camera ideas",
-    message: "Suggest camera angles, lenses, framing and lighting for each shot.",
+    message:
+      "Suggest camera ideas for the few shots that matter most: where to put the camera, how close to get and how to light them.",
     specialists: ["cinematography-director"],
   },
   {
     label: "Sound design",
-    message: "Plan the sound: music, ambience, Foley and silence for each scene.",
+    message:
+      "Suggest sound for the scenes that matter most: music, background sounds, everyday noises like footsteps, and when to go quiet.",
     specialists: ["sound-director"],
   },
   {
     label: "Editing & pacing",
-    message: "Suggest cuts, transitions, pacing and rhythm for the film.",
+    message:
+      "Check the timing of the film: where to cut, how to go from one scene to the next, and which parts feel too slow or rushed. Just the biggest fixes.",
     specialists: ["editing-director"],
   },
   {
     label: "Consistency check",
-    message: "Check continuity of the cast, props, costumes, locations and timeline.",
+    message:
+      "Check for mistakes between scenes: do people, clothes, props and places stay the same, and do events happen in the right order? List the biggest ones.",
     specialists: ["continuity-reviewer"],
   },
   {
     label: "Full review",
-    message: "Review the whole film and give me your notes.",
+    message: "Review the whole film and give me your most important notes.",
     specialists: "all",
   },
 ];

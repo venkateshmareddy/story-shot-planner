@@ -11,7 +11,7 @@ import { validateAudioFile } from "@/lib/audio";
 import { buildDecisionHistory } from "@/lib/decisions";
 import { conceptProjectTitle, conceptSource, seedContextFromConcept, type StoryConcept } from "@/lib/ideas";
 import { sessionFromConcept } from "@/lib/ideas-flow";
-import type { ResolvedInterviewTurn } from "@/lib/interview";
+import { addExtraDirection } from "@/lib/interview";
 import { answerFor } from "@/lib/quick-actions";
 import { MAX_SESSION_TITLE, newId, planSignature, type ChatMessage, type StorySession } from "@/lib/session";
 import { checkSourceText, needsDigest, type SourceKind, type StorySource, storyForStep } from "@/lib/source-text";
@@ -20,21 +20,27 @@ import {
   contextReadiness,
   detectDiscoveryCommand,
   EMPTY_CONTEXT,
+  editFact,
   removeFact,
   type StoryContext,
 } from "@/lib/story-context";
 import { MAX_ANSWER_CHARACTERS, MAX_CHAT_HISTORY, MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
 import type { ShotPlan } from "@/lib/story-planning";
 import {
+  adoptReturnedContext,
   analyzeImage,
   askDirector,
   askInterview,
   createDigest,
   directorCollected,
+  directorSource,
   generatePlan,
   importDocument,
+  type InterviewReply,
   MAX_REFERENCES,
   transcribeVoice,
+  withEditedAnswer,
+  withSessionContext,
 } from "@/lib/studio-agent";
 import { classifyUpload, documentExtensionOf, routeLongText, sourceNote, tooLongForChatMessage } from "@/lib/upload";
 import { useSessions } from "@/lib/use-sessions";
@@ -122,15 +128,16 @@ export function StudioApp() {
   );
 
   const applyInterviewTurn = useCallback(
-    (id: string, turn: ResolvedInterviewTurn, usage?: UsageRecord, context?: StoryContext) => {
+    (id: string, { turn, usage, context, options }: InterviewReply) => {
       store.update(id, (base) => {
-        const session = context ? { ...base, context } : base;
+        const session = context ? { ...base, context: adoptReturnedContext(base.context, context) } : base;
         if (turn.status === "ask") {
           const question: ChatMessage = {
             id: newId(),
             role: "agent",
             text: [turn.note.trim(), turn.question].filter(Boolean).join("\n\n") || turn.question,
             suggestion: turn.rationale || undefined,
+            ...(options.length > 0 ? { options } : {}),
           };
           return {
             ...session,
@@ -178,7 +185,7 @@ export function StudioApp() {
       if (isActiveRequestSession(id)) setError(result.error);
       return;
     }
-    applyInterviewTurn(id, result.turn, result.usage, result.context);
+    applyInterviewTurn(id, result);
   }
 
   function submitTitle(event: FormEvent<HTMLFormElement>) {
@@ -227,14 +234,14 @@ export function StudioApp() {
     }
     if (session.readyToPlan && !session.pendingQuestion) {
       const userMessage: ChatMessage = { id: newId(), role: "user", text };
-      const nextAnswered = [...session.answered, { question: "Additional direction", answer: text }];
+      const nextAnswered = addExtraDirection(session.answered, text);
       store.update(session.id, (current) => ({
         ...current,
         messages: [...current.messages, userMessage],
         answered: nextAnswered,
       }));
       if (fromComposer) setInput("");
-      await createPlan({ ...session, answered: nextAnswered }, undefined, fromComposer ? text : "");
+      await createPlan({ ...session, answered: nextAnswered }, userMessage, fromComposer ? text : "", session.answered);
       return;
     }
     const answer = answerFor(command, text);
@@ -269,7 +276,7 @@ export function StudioApp() {
       if (isActiveRequestSession(session.id)) setError(result.error);
       return;
     }
-    applyInterviewTurn(session.id, result.turn, result.usage, result.context);
+    applyInterviewTurn(session.id, result);
   }
 
   async function sendRefine(session: StorySession, text: string, fromComposer = true) {
@@ -292,6 +299,7 @@ export function StudioApp() {
       references: session.references?.length ? session.references : undefined,
       context: session.context,
       decisions: buildDecisionHistory(session.messages),
+      source: directorSource(session.title, session.source),
     });
     finishRequest(requestId);
     if (!result.ok) {
@@ -343,17 +351,28 @@ export function StudioApp() {
     void sendDiscovery(active, label, false);
   }
 
+  function sendAnswerOption(option: string) {
+    if (!active || busy || transcribing || uploading || active.phase !== "discovery" || !active.pendingQuestion) return;
+    void sendDiscovery(active, option, false);
+  }
+
   function sendQuickAction(message: string) {
     if (!active || busy || transcribing || uploading || active.phase !== "refining") return;
     void sendRefine(active, message, false);
   }
 
-  async function createPlan(session: StorySession, trigger?: ChatMessage, draft = "") {
+  async function createPlan(
+    session: StorySession,
+    trigger?: ChatMessage,
+    draft = "",
+    previousAnswered?: StorySession["answered"],
+  ) {
     const fail = (message: string) => {
-      if (trigger) {
+      if (trigger || previousAnswered) {
         store.update(session.id, (current) => ({
           ...current,
-          messages: current.messages.filter((item) => item.id !== trigger.id),
+          messages: trigger ? current.messages.filter((item) => item.id !== trigger.id) : current.messages,
+          ...(previousAnswered ? { answered: previousAnswered } : {}),
         }));
       }
       if (draft && isActiveRequestSession(session.id)) setInput((previous) => previous || draft);
@@ -413,16 +432,8 @@ export function StudioApp() {
 
   function editAnswer(messageId: string, value: string): boolean {
     if (!active || busy || active.phase !== "discovery") return false;
-    const text = value.trim().slice(0, MAX_ANSWER_CHARACTERS);
-    if (!text) return false;
-    const index = active.messages.find((message) => message.id === messageId)?.answerIndex;
-    if (index === undefined || !active.answered[index]) return false;
-    const answer = answerFor(detectDiscoveryCommand(text), text);
-    store.update(active.id, (current) => ({
-      ...current,
-      answered: current.answered.map((item, position) => (position === index ? { ...item, answer } : item)),
-      messages: current.messages.map((message) => (message.id === messageId ? { ...message, text } : message)),
-    }));
+    if (!withEditedAnswer(active, messageId, value)) return false;
+    store.update(active.id, (current) => withEditedAnswer(current, messageId, value) ?? current);
     return true;
   }
 
@@ -438,7 +449,7 @@ export function StudioApp() {
 
   function updateContext(change: (context: StoryContext) => StoryContext) {
     if (!active || busy) return;
-    store.update(active.id, (current) => (current.context ? { ...current, context: change(current.context) } : current));
+    store.update(active.id, (current) => withSessionContext(current, change));
   }
 
   function editPlan(mutate: (plan: ShotPlan) => void) {
@@ -488,7 +499,7 @@ export function StudioApp() {
       if (isActiveRequestSession(id)) setError(result.error);
       return;
     }
-    applyInterviewTurn(id, result.turn, result.usage, result.context);
+    applyInterviewTurn(id, result);
   }
 
   async function placeImportedText(
@@ -656,8 +667,8 @@ export function StudioApp() {
         onSelect={selectSession}
         onRename={store.rename}
         onDelete={deleteSession}
-        onNav={(next) => {
-          setSettingsSection(next === "usage" ? "usage" : "preferences");
+        onNav={() => {
+          setSettingsSection("usage");
           setView("settings");
           closeDrawer();
         }}
@@ -752,6 +763,7 @@ export function StudioApp() {
               onSend={send}
               onQuickAction={sendQuickAction}
               onDiscoveryAction={sendDiscoveryAction}
+              onAnswerOption={sendAnswerOption}
               onGeneratePlan={doGeneratePlan}
               onAccept={acceptProposal}
               onReject={rejectProposal}
@@ -767,6 +779,7 @@ export function StudioApp() {
               onEditPlan={editPlan}
               onApproveFact={(key) => updateContext((context) => approveFact(context, key))}
               onRemoveFact={(key) => updateContext((context) => removeFact(context, key))}
+              onEditFact={(key, value) => updateContext((context) => editFact(context, key, value))}
             />
           </div>
         ) : null}

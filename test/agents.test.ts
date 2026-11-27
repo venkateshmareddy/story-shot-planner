@@ -109,7 +109,8 @@ function fakeDeps(handlers: Partial<Record<UsageStep, Handler>>, delayMs = 0) {
         reply: "Refined.",
         changeSummary: ["Renamed Elias"],
         plan: { ...input.plan, title: "Refined" },
-        usage: usageFor("refine"),
+        changed: true,
+        usage: [usageFor("refine")],
       };
     },
   };
@@ -153,7 +154,7 @@ for (const { def, has, lacks } of contextCases) {
     for (const key of has) assert.ok(keys.has(key), `${def.id} missing ${key}`);
     for (const key of lacks) assert.ok(!keys.has(key), `${def.id} leaks ${key}`);
     assert.ok(JSON.stringify(context).includes("S01_SH02"));
-    assert.ok(def.maxOutputTokens <= 1_800);
+    assert.equal(def.maxOutputTokens, 2_800);
   });
 
   test(`${def.id} schema accepts valid and rejects invalid output`, () => {

@@ -76,6 +76,8 @@ export function toWinAnsi(text: string, supported: ReadonlySet<number>): string 
 type Run = { text: string; bold?: boolean };
 type Token = { text: string; font: PDFFont; spaceBefore: boolean };
 type TextStyle = { size: number; indent?: number; color?: ReturnType<typeof rgb>; leading?: number; bullet?: boolean };
+/** One table cell: a stack of paragraphs; a muted paragraph renders as the grey sub-line. */
+type TableCell = { runs: Run[]; muted?: boolean }[];
 
 class PdfWriter {
   readonly pages: PDFPage[] = [];
@@ -220,30 +222,112 @@ class PdfWriter {
     if (this.y < PAGE_HEIGHT - MARGIN_TOP) this.space(before);
     this.text([{ text, bold: true }], { size, color });
   }
+
+  private wrapRuns(runs: Run[], size: number, maxWidth: number): Token[][] {
+    return this.wrap(this.tokenize(runs), size, Math.max(8, maxWidth));
+  }
+
+  /** Draws a stack of paragraphs starting at topY within a fixed width; returns the height used. */
+  private drawParagraphs(cell: TableCell, x: number, topY: number, width: number, size: number, leading: number): number {
+    let y = topY;
+    for (const para of cell) {
+      const color = para.muted ? MUTED : INK;
+      for (const line of this.wrapRuns(para.runs, size, width)) {
+        y -= leading;
+        const baseline = y + (leading - size) * 0.5;
+        let cx = x;
+        let chunk = "";
+        let chunkFont = line[0]?.font ?? this.regular;
+        const flush = () => {
+          if (!chunk) return;
+          this.page.drawText(chunk, { x: cx, y: baseline, size, font: chunkFont, color });
+          cx += chunkFont.widthOfTextAtSize(chunk, size);
+          chunk = "";
+        };
+        line.forEach((token, index) => {
+          const prefix = index > 0 && token.spaceBefore ? " " : "";
+          if (token.font !== chunkFont) {
+            flush();
+            chunkFont = token.font;
+          }
+          chunk += prefix + token.text;
+        });
+        flush();
+      }
+    }
+    return topY - y;
+  }
+
+  private measureCell(cell: TableCell, width: number, size: number): number {
+    return cell.reduce((lines, para) => lines + this.wrapRuns(para.runs, size, width).length, 0);
+  }
+
+  table(headers: string[], widths: number[], rows: TableCell[][]) {
+    const size = 7;
+    const leading = size * 1.3;
+    const padX = 3;
+    const padY = 4;
+    const xs: number[] = [];
+    let cursor = MARGIN_X;
+    for (const width of widths) {
+      xs.push(cursor);
+      cursor += width;
+    }
+    const drawHeader = () => {
+      this.ensure(leading + padY);
+      const rowTop = this.y;
+      headers.forEach((header, index) => {
+        this.drawParagraphs([{ runs: [{ text: header, bold: true }], muted: true }], xs[index] + padX, rowTop, widths[index] - padX * 2, size, leading);
+      });
+      this.y = rowTop - (leading + padY);
+      this.rule(RULE);
+    };
+    drawHeader();
+    for (const row of rows) {
+      const maxLines = Math.max(1, ...row.map((cell, index) => this.measureCell(cell, widths[index] - padX * 2, size)));
+      const rowHeight = maxLines * leading + padY * 2;
+      if (this.y - rowHeight < MARGIN_BOTTOM) {
+        this.newPage();
+        drawHeader();
+      }
+      const rowTop = this.y;
+      row.forEach((cell, index) => {
+        this.drawParagraphs(cell, xs[index] + padX, rowTop - padY, widths[index] - padX * 2, size, leading);
+      });
+      this.y = rowTop - rowHeight;
+      this.rule(RULE);
+    }
+    this.space(6);
+  }
 }
 
+const SHOT_HEADERS = ["Shot", "Sec", "Framing / Camera", "Who / Location", "What we see", "Dialogue", "Emotion", "Sound"];
+const SHOT_WIDTHS = [54, 22, 80, 66, 92, 66, 50, 53];
+
 function writeScene(writer: PdfWriter, scene: BlueprintScene) {
-  writer.heading(`${scene.id} · ${scene.title} · ${scene.length}`, 12, INK, 14, 40);
-  for (const shot of scene.shots) {
-    const header = [shot.id, shot.length, shot.framing, shot.camera].filter(Boolean).join(" · ");
-    writer.ensure(48);
-    writer.space(6);
-    writer.text([{ text: header, bold: true }], { size: 10, color: ACCENT });
-    const details: [string, string][] = [
-      ["What happens", shot.action],
-      ["Who", shot.who],
-      ["Place", shot.place],
-      ["Feeling", shot.feeling],
-      ["Sound", shot.sound],
-    ];
-    for (const [label, value] of details) {
-      if (value) writer.text([{ text: `${label}: `, bold: true }, { text: value }], { size: 9.5, indent: 12 });
-    }
-    if (shot.dialogue.length > 0) {
-      writer.text([{ text: "Dialogue:", bold: true }], { size: 9.5, indent: 12 });
-      for (const line of shot.dialogue) writer.text([{ text: line }], { size: 9.5, indent: 24 });
-    }
+  writer.heading(`${scene.id} · ${scene.title} · ${scene.length}`, 12, INK, 14, 54);
+  const places = [...new Set(scene.shots.map((shot) => shot.place).filter(Boolean))].join(" · ");
+  if (places) {
+    writer.text([{ text: places }], { size: 9, color: MUTED });
+    writer.space(2);
   }
+  if (scene.shots.length === 0) {
+    writer.text([{ text: "No shots yet." }], { size: 9.5, color: MUTED });
+    return;
+  }
+  const rows: TableCell[][] = scene.shots.map((shot) => [
+    [{ runs: [{ text: shot.id, bold: true }] }],
+    [{ runs: [{ text: shot.length }] }],
+    [{ runs: [{ text: shot.framing || "—" }] }, ...(shot.camera ? [{ runs: [{ text: shot.camera }], muted: true }] : [])],
+    [{ runs: [{ text: shot.who || "None" }] }, ...(shot.place ? [{ runs: [{ text: shot.place }], muted: true }] : [])],
+    [{ runs: [{ text: shot.action || "—" }] }],
+    shot.dialogue.length > 0
+      ? shot.dialogue.map((line) => ({ runs: [{ text: line }] }))
+      : [{ runs: [{ text: "—" }], muted: true }],
+    [{ runs: [{ text: shot.feeling || "—" }] }],
+    [{ runs: [{ text: shot.sound || "—" }] }],
+  ]);
+  writer.table(SHOT_HEADERS, SHOT_WIDTHS, rows);
 }
 
 function writeBlock(writer: PdfWriter, block: BlueprintBlock) {

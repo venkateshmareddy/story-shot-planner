@@ -78,7 +78,7 @@ export const imageReference = z.object({
   shotIdeas: referenceText,
 }) satisfies z.ZodType<ImageReference>;
 
-export const directorRequest = refineRequest.pick({ plan: true, messages: true, message: true }).extend({
+export const directorRequest = refineRequest.pick({ plan: true, messages: true, message: true, source: true }).extend({
   answers: z.array(interviewExchange).max(MAX_INTERVIEW_TURNS).optional(),
   collected: z.array(collectedItem).max(40).optional(),
   references: z.array(imageReference).max(MAX_IMAGE_REFERENCES).optional(),

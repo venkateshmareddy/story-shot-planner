@@ -19,9 +19,14 @@ export type SpecialistDefinition = {
   maxOutputTokens: number;
   /** Only the plan slice this specialist needs. */
   buildContext: (plan: ShotPlan, references?: readonly ImageReference[]) => unknown;
+  /** Receives the filmmaker's imported story (source) when the request has one. */
+  readsSource?: boolean;
 };
 
 export const MAX_SPECIALIST_RECOMMENDATIONS = 5;
+export const MAX_SPECIALIST_EDITS = 10;
+// Room for 5 recommendations and 10 edits on a 60+ shot plan; ~70 s at the observed ~40 tokens/s.
+export const SPECIALIST_MAX_OUTPUT_TOKENS = 2_800;
 export const MAX_SPECIALIST_FACTS = 16;
 export const MAX_SPECIALIST_OPEN_QUESTIONS = 4;
 export const MAX_SPECIALIST_DECISIONS = 6;
@@ -127,7 +132,7 @@ export function specialistInstructions(
     "Input: the filmmaker's message; recent conversation (recent); the project context relevant to you (context: facts with category, label, value and status, plus openQuestions still unresolved), or for older projects a flat list of approved details (approved); the filmmaker's decisions on earlier proposals, newest last (decisions); and the plan excerpt for your discipline (plan).",
     "Facts with status filmmaker or approved, and approved details, are constraints: build on them and never contradict them; if one hurts the film, say why and offer an alternative for the filmmaker to decide. Facts with status ai_suggestion are earlier AI guesses you may challenge or replace. Treat openQuestions as unknowns and mark anything you assume about them as an assumption. Build on accepted decisions. Never re-propose a change from a rejected decision unless the filmmaker's message asks for it again.",
     `summary: answer the filmmaker's message directly in 2-5 sentences with your main judgement and why; give a fuller assessment when they ask for a review. recommendations: up to ${MAX_SPECIALIST_RECOMMENDATIONS}, most important first, only points that matter. target is a shot id like S01_SH02, "Scene 2", "Character: Name" or "Overall"; issue names the specific problem in this plan; recommendation is the specific, actionable change (what, where and how); rationale explains why it matters for the audience or the shoot; priority is high (clearly hurts the film or the shoot), medium or low.`,
-    `edits: concrete replacement values, only when the filmmaker asks for a change or a clear fix exists in your discipline; otherwise []. scene and shot are 1-based and match the ids (S02_SH03 is scene 2, shot 3). ${fieldRules} value is the complete new text for that field. Edit only your own fields. You recommend and propose; the filmmaker approves every edit.`,
+    `edits: concrete replacement values, only when the filmmaker asks for a change or a clear fix exists in your discipline; otherwise []. At most ${MAX_SPECIALIST_EDITS} edits, the ones with the most impact first, even when the filmmaker asks about every shot or scene; when many shots need the same kind of change, say it once as a recommendation instead of editing each shot. scene and shot are 1-based and match the ids (S02_SH03 is scene 2, shot 3). ${fieldRules} value is the complete new text for that field. Edit only your own fields. You recommend and propose; the filmmaker approves every edit.`,
     "Never invent story events, characters or dialogue.",
   ]
     .filter(Boolean)

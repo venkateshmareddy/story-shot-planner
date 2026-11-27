@@ -1,6 +1,12 @@
 import type { ShotPlan } from "@/lib/story-planning";
 import { specialistOutput } from "./schemas";
-import { clip, type SpecialistDefinition, shotId, specialistInstructions } from "./shared";
+import {
+  clip,
+  SPECIALIST_MAX_OUTPUT_TOKENS,
+  type SpecialistDefinition,
+  shotId,
+  specialistInstructions,
+} from "./shared";
 
 const fields = ["seconds"] as const;
 
@@ -14,7 +20,7 @@ export const editingDirector: SpecialistDefinition = {
   fields,
   contextCategories: ["format", "structure", "scenes", "shots", "intent", "genre"],
   schema: specialistOutput(fields),
-  maxOutputTokens: 1_500,
+  maxOutputTokens: SPECIALIST_MAX_OUTPUT_TOKENS,
   instructions: specialistInstructions(
     "Editor",
     "You think like a professional film editor: measure each shot's duration against its action, emotion and spoken words (about 2.5 words per second), and protect the film's total runtime.",

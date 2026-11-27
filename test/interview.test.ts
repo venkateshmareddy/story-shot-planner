@@ -6,7 +6,9 @@ import {
   type InterviewTurnOutput,
   interviewTurnOutput,
   isNearDuplicate,
+  MAX_OPTION_CHARACTERS,
   resolveInterviewTurn,
+  tidyOptions,
   tidyQuestion,
 } from "../src/lib/interview.ts";
 import { composeInstructions } from "../src/lib/server/prompts.ts";
@@ -17,6 +19,7 @@ function askMock(overrides: Partial<InterviewTurnOutput> = {}): InterviewTurnOut
     note: "The creator clarified the ending is bittersweet.",
     complete: false,
     question: "What visual motif should carry the bittersweet tone?",
+    options: ["Rain on glass", "An empty chair"],
     rationale: "A recurring motif ties the emotional beats together for the audience.",
     recommendation: "",
     facts: [{ category: "genre", label: "Tone", value: "Bittersweet ending", source: "user" }],
@@ -30,6 +33,7 @@ function completeMock(overrides: Partial<InterviewTurnOutput> = {}): InterviewTu
     note: "Enough creative decisions are now captured.",
     complete: true,
     question: "",
+    options: [],
     rationale: "",
     recommendation: "We have tone, motif and structure — proceed to planning.",
     facts: [{ category: "genre", label: "Tone", value: "Bittersweet ending", source: "user" }],
@@ -188,4 +192,31 @@ test("resolveInterviewTurn completes on a near-duplicate question with the defau
   );
   assert.equal(resolved.status, "complete");
   assert.equal(resolved.status === "complete" && resolved.recommendation, DEFAULT_RECOMMENDATION);
+});
+
+test("an ask turn returns the model's tappable options", () => {
+  const resolved = resolveInterviewTurn(askMock(), [], EMPTY_CONTEXT);
+  assert.equal(resolved.status, "ask");
+  assert.deepEqual(resolved.status === "ask" && resolved.options, ["Rain on glass", "An empty chair"]);
+  const open = resolveInterviewTurn(askMock({ question: "What is the main character called?", options: [] }), [], EMPTY_CONTEXT);
+  assert.deepEqual(open.status === "ask" && open.options, []);
+  const complete = resolveInterviewTurn(completeMock({ options: ["Ignored"] }), [], EMPTY_CONTEXT);
+  assert.equal(complete.status, "complete");
+  assert.ok(!("options" in complete));
+});
+
+test("options are trimmed, de-duplicated, capped at four and clipped at a word boundary", () => {
+  assert.deepEqual(tidyOptions(["  Rain ", "", "   ", "rain", "Snow", "Fog", "Sun", "Wind"]), ["Rain", "Snow", "Fog", "Sun"]);
+  const long = "A very long answer choice that keeps going well past the sixty character limit";
+  const [clipped] = tidyOptions([long]);
+  assert.ok(clipped.length <= MAX_OPTION_CHARACTERS);
+  assert.ok(clipped.endsWith("…"));
+  assert.ok(long.startsWith(clipped.slice(0, -1)));
+  assert.ok(!clipped.slice(0, -1).endsWith(" "));
+  assert.deepEqual(tidyOptions([]), []);
+});
+
+test("interviewTurnOutput requires the options list", () => {
+  const { options: _options, ...withoutOptions } = askMock();
+  assert.equal(interviewTurnOutput.safeParse(withoutOptions).success, false);
 });

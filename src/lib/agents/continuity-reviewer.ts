@@ -1,6 +1,13 @@
+import { SOURCE_STORY_RULE } from "@/lib/server/prompts";
 import type { ShotPlan } from "@/lib/story-planning";
 import { specialistOutput } from "./schemas";
-import { clip, type SpecialistDefinition, shotId, specialistInstructions } from "./shared";
+import {
+  clip,
+  SPECIALIST_MAX_OUTPUT_TOKENS,
+  type SpecialistDefinition,
+  shotId,
+  specialistInstructions,
+} from "./shared";
 
 const fields = ["location", "characters"] as const;
 
@@ -10,10 +17,11 @@ export const continuityReviewer: SpecialistDefinition = {
   fields,
   contextCategories: ["characters", "relationships", "locations", "scenes", "shots", "production"],
   schema: specialistOutput(fields),
-  maxOutputTokens: 1_800,
+  maxOutputTokens: SPECIALIST_MAX_OUTPUT_TOKENS,
+  readsSource: true,
   instructions: specialistInstructions(
     "Script Supervisor",
-    "You think like a professional script supervisor: find the errors an audience would notice or a shoot would trip over, such as characters who speak or act without being listed in the shot, inconsistent names, and screen-geography problems.",
+    `You think like a professional script supervisor: find the errors an audience would notice or a shoot would trip over, such as characters who speak or act without being listed in the shot, inconsistent names, and screen-geography problems. ${SOURCE_STORY_RULE}`,
     "Fields: location is one location name, using an existing name exactly where one fits; characters is a comma-separated list of the existing character names on screen in that shot. Both are shot-level.",
     {
       id: "continuity-reviewer",

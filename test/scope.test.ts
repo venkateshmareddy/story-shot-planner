@@ -60,7 +60,7 @@ test("detects edits that change the scene list", () => {
   assert.ok(!isSceneStructureEdit("Remove the dialogue from scene 2"));
 });
 
-// --- Scoped refine ---
+// --- The refine fallback: one plan edit, named scenes are only a hint ---
 
 function makePlan(): ShotPlan {
   const shot = (location: string, action: string) => ({
@@ -104,7 +104,7 @@ const usage = (inputTokens: number): UsageRecord => ({
   totalTokens: inputTokens + 1,
 });
 
-type FakeRefine = (input: RefineRequest, call: number) => { reply: string; changeSummary: string[]; plan: ShotPlan };
+type FakeRefine = (input: RefineRequest) => { reply: string; changeSummary: string[]; plan: ShotPlan; changed: boolean };
 
 function fakeDeps(refine: FakeRefine) {
   const inputs: RefineRequest[] = [];
@@ -120,107 +120,60 @@ function fakeDeps(refine: FakeRefine) {
     callModel,
     refine: async (input) => {
       inputs.push(structuredClone(input));
-      return { ...refine(input, inputs.length), usage: usage(inputs.length) };
+      return { ...refine(input), usage: [usage(inputs.length), usage(10)] };
     },
   };
   return { deps, inputs, modelCalls };
 }
 
 const rewriteScenes: FakeRefine = (input) => ({
-  reply: "Scoped reply",
-  changeSummary: ["S02_SH01: rewrote the action"],
-  plan: {
-    ...input.plan,
-    title: "Model renamed the film",
-    characters: [
-      ...input.plan.characters,
-      { name: "Postman", role: "Messenger", look: "Blue cap", personality: "Kind", voice: "Warm" },
-      { name: "ELIAS", role: "Duplicate", look: "", personality: "", voice: "" },
-    ],
-    locations: [...input.plan.locations, { name: "Post office", description: "Fluorescent" }],
-    scenes: input.plan.scenes.map((scene) => ({
-      ...scene,
-      title: `${scene.title} (revised)`,
-      shots: scene.shots.map((shot) => ({ ...shot, characters: ["Elias", "Postman"], action: "Revised." })),
-    })),
-  },
+  reply: "I'll rewrite Scene 2. Press Apply to update your board.",
+  changeSummary: ["S02: the postman delivers the letter"],
+  plan: { ...input.plan, scenes: input.plan.scenes.map((scene, index) => (index === 1 ? { ...scene, title: "Letter (revised)" } : scene)) },
+  changed: true,
 });
 
-test("scoped revision sends only the targeted scenes and changes only them", async () => {
-  const original = makePlan();
-  const input = request("In scene 2, have a postman deliver the letter", original);
-  const fake = fakeDeps(rewriteScenes);
-  const result = await runDirector(input, fake.deps);
-
-  assert.equal(fake.inputs.length, 1);
-  assert.equal(fake.modelCalls.length, 0);
-  const sent = fake.inputs[0];
-  assert.deepEqual(sent.plan.scenes, [original.scenes[1]]);
-  assert.equal(sent.plan.title, original.title);
-  assert.deepEqual(sent.plan.characters, original.characters);
-  assert.deepEqual(sent.plan.reviewNotes, original.reviewNotes);
-  assert.ok(sent.message.startsWith("In scene 2, have a postman deliver the letter"));
-  assert.match(sent.message, /Scene 2/);
-  assert.deepEqual(sent.messages, input.messages);
-
-  assert.equal(result.mode, "refine");
-  assert.equal(result.reply, "Scoped reply");
-  assert.deepEqual(result.changeSummary, ["S02_SH01: rewrote the action"]);
-  assert.deepEqual(result.usage, [usage(1)]);
-  const plan = result.plan;
-  assert.ok(plan);
-  assert.equal(plan.scenes.length, 4);
-  assert.equal(plan.scenes[1].title, "Letter (revised)");
-  assert.deepEqual(plan.scenes[0], original.scenes[0]);
-  assert.deepEqual(plan.scenes[2], original.scenes[2]);
-  assert.deepEqual(plan.scenes[3], original.scenes[3]);
-  assert.equal(plan.title, "The Letter");
-  assert.deepEqual(input.plan, makePlan());
-});
-
-test("new characters and locations from the scoped result are appended once", async () => {
-  const fake = fakeDeps(rewriteScenes);
-  const result = await runDirector(request("Rewrite the last scene with a postman"), fake.deps);
-  const plan = result.plan;
-  assert.ok(plan);
-  assert.deepEqual(plan.characters.map(({ name }) => name), ["Elias", "Postman"]);
-  assert.deepEqual(plan.locations.map(({ name }) => name), ["Kitchen", "Post office"]);
-  assert.equal(plan.scenes[3].title, "Night (revised)");
-  assert.deepEqual(plan.scenes.slice(0, 3), makePlan().scenes.slice(0, 3));
-});
-
-test("multiple targeted scenes splice back at their original positions", async () => {
-  const fake = fakeDeps(rewriteScenes);
-  const result = await runDirector(request("Rework scenes 1 and 3"), fake.deps);
-  assert.deepEqual(fake.inputs[0].plan.scenes.map(({ title }) => title), ["Morning", "Porch"]);
-  assert.deepEqual(result.plan?.scenes.map(({ title }) => title), ["Morning (revised)", "Letter", "Porch (revised)", "Night"]);
-});
-
-test("scene count mismatch falls back to one full refine", async () => {
-  const fake = fakeDeps((input, call) =>
-    call === 1
-      ? { reply: "Scoped", changeSummary: ["x"], plan: { ...input.plan, scenes: [...input.plan.scenes, ...input.plan.scenes] } }
-      : { reply: "Full", changeSummary: ["Full change"], plan: { ...input.plan, title: "Full" } },
-  );
-  const result = await runDirector(request("Change scene 2"), fake.deps);
-  assert.equal(fake.inputs.length, 2);
-  assert.equal(fake.inputs[1].plan.scenes.length, 4);
-  assert.equal(fake.inputs[1].message, "Change scene 2");
-  assert.equal(result.reply, "Full");
-  assert.equal(result.plan?.title, "Full");
-  assert.deepEqual(result.usage, [usage(1), usage(2)]);
-});
-
-test("untargeted, whole-film and scene-structure requests use a single full refine", async () => {
-  for (const message of ["Rename Elias to Tom", "Make every scene rainy", "Delete scene 2", "Rework scenes 1-4"]) {
-    const fake = fakeDeps((input) => ({ reply: "Full", changeSummary: [], plan: { ...input.plan, title: "Full" } }));
-    const result = await runDirector(request(message), fake.deps);
+test("every refine-path request makes one plan edit with the whole plan and the message as typed", async () => {
+  const messages = [
+    "In scene 2, have a postman deliver the letter",
+    "Rework scenes 1 and 3",
+    "Rename Elias to Tom",
+    "Make every scene rainy",
+    "Delete scene 2",
+    "Rework scenes 1-4",
+  ];
+  for (const message of messages) {
+    const original = makePlan();
+    const input = request(message, original);
+    const fake = fakeDeps(rewriteScenes);
+    const result = await runDirector(input, fake.deps);
     assert.equal(fake.inputs.length, 1, message);
-    assert.equal(fake.inputs[0].message, message);
+    assert.equal(fake.modelCalls.length, 0, message);
+    assert.equal(fake.inputs[0].message, message, message);
     assert.deepEqual(fake.inputs[0].plan, makePlan(), message);
-    assert.equal(result.plan?.title, "Full", message);
-    assert.deepEqual(result.usage, [usage(1)], message);
+    assert.deepEqual(fake.inputs[0].messages, input.messages, message);
+    assert.equal(result.mode, "refine", message);
+    assert.deepEqual(input.plan, makePlan(), message);
   }
+});
+
+test("a changed plan becomes the proposal with every call's usage record", async () => {
+  const fake = fakeDeps(rewriteScenes);
+  const result = await runDirector(request("In scene 2, have a postman deliver the letter"), fake.deps);
+  assert.equal(result.reply, "I'll rewrite Scene 2. Press Apply to update your board.");
+  assert.deepEqual(result.changeSummary, ["S02: the postman delivers the letter"]);
+  assert.deepEqual(result.plan?.scenes.map(({ title }) => title), ["Morning", "Letter (revised)", "Porch", "Night"]);
+  assert.deepEqual(result.usage, [usage(1), usage(10)]);
+});
+
+test("an answer without a change has no proposal: plan null and no change bullets", async () => {
+  const fake = fakeDeps((input) => ({ reply: "Scene 2 runs 8 seconds.", changeSummary: ["stray"], plan: input.plan, changed: false }));
+  const result = await runDirector(request("How long is scene 2?"), fake.deps);
+  assert.equal(result.mode, "refine");
+  assert.equal(result.reply, "Scene 2 runs 8 seconds.");
+  assert.equal(result.plan, null);
+  assert.deepEqual(result.changeSummary, []);
+  assert.equal(result.usage.length, 2);
 });
 
 // --- Reference images reach the cinematography specialist ---

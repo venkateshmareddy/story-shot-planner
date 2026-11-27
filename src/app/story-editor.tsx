@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useId, useState } from "react";
+import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
 import type { StorySession } from "@/lib/session";
 import type { StorySource } from "@/lib/source-text";
 import {
@@ -8,6 +8,7 @@ import {
   type ContextFact,
   contextReadiness,
   factKey,
+  MAX_FACT_VALUE,
   missingCategories,
   type StoryContext,
 } from "@/lib/story-context";
@@ -15,7 +16,12 @@ import type { ShotPlan } from "@/lib/story-planning";
 
 type PlanEditor = (mutate: (plan: ShotPlan) => void) => void;
 type FactAction = (key: string) => void;
-type ContextActions = { busy: boolean; onApproveFact: FactAction; onRemoveFact: FactAction };
+type ContextActions = {
+  busy: boolean;
+  onApproveFact: FactAction;
+  onRemoveFact: FactAction;
+  onEditFact: (key: string, value: string) => void;
+};
 type Scene = ShotPlan["scenes"][number];
 type Shot = Scene["shots"][number];
 
@@ -96,11 +102,12 @@ export function StoryEditor({
   onEditPlan,
   onApproveFact,
   onRemoveFact,
+  onEditFact,
 }: {
   session: StorySession;
   onEditPlan: PlanEditor;
 } & ContextActions) {
-  const contextActions: ContextActions = { busy, onApproveFact, onRemoveFact };
+  const contextActions: ContextActions = { busy, onApproveFact, onRemoveFact, onEditFact };
   const { plan } = session;
   const [editing, setEditing] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
@@ -142,13 +149,45 @@ export function StoryEditor({
   }
 
   const detailsOpen = isEditing("details");
+  const shotCount = plan.scenes.reduce((n, scene) => n + scene.shots.length, 0);
+  const dialogueCount = plan.scenes.reduce(
+    (n, scene) => n + scene.shots.reduce((m, shot) => m + shot.dialogue.length, 0),
+    0,
+  );
+  const totalSeconds = plan.scenes.reduce(
+    (n, scene) => n + scene.shots.reduce((m, shot) => m + (Number.isFinite(shot.seconds) && shot.seconds > 0 ? shot.seconds : 0), 0),
+    0,
+  );
 
   return (
     <section className="editor-panel panel" aria-label="Your story">
       <header className="editor-head editor-doc-head">
-        <p className="muted studio-eyebrow">Your story</p>
+        <p className="muted studio-eyebrow">Shot planner</p>
         <h2 className="studio-title editor-doc-title">{session.title || "Untitled project"}</h2>
+        {plan.logline && <p className="editor-logline">{plan.logline}</p>}
         {session.source && <SourceLine source={session.source} />}
+        <dl className="bp-stats">
+          <div>
+            <dd>{plan.scenes.length}</dd>
+            <dt>Scenes</dt>
+          </div>
+          <div>
+            <dd>{shotCount}</dd>
+            <dt>Shots</dt>
+          </div>
+          <div>
+            <dd>{dialogueCount}</dd>
+            <dt>Dialogue lines</dt>
+          </div>
+          <div>
+            <dd>{Math.round(totalSeconds)} s</dd>
+            <dt>Running time</dt>
+          </div>
+          <div>
+            <dd>16:9 · 24 fps</dd>
+            <dt>Format</dt>
+          </div>
+        </dl>
       </header>
 
       <div className="editor-doc" key={`doc-${session.id}`}>
@@ -167,10 +206,9 @@ export function StoryEditor({
             </>
           ) : (
             <>
-              {plan.logline && <p className="studio-logline">{plan.logline}</p>}
               {plan.intent && (
                 <div className="studio-intent">
-                  <h4 className="editor-subhead">What the film is about</h4>
+                  <h4 className="editor-subhead">Creator’s intent</h4>
                   <p>{plan.intent}</p>
                 </div>
               )}
@@ -250,7 +288,7 @@ function DiscoveryDocument({ session, actions }: { session: StorySession; action
       {session.context ? (
         <div className="studio-notes">
           <h3>What we know so far</h3>
-          <StoryContextPanel context={session.context} actions={actions} />
+          <StoryContextPanel key={session.id} context={session.context} actions={actions} />
         </div>
       ) : (
         session.collected.length > 0 && (
@@ -274,52 +312,122 @@ function DiscoveryDocument({ session, actions }: { session: StorySession; action
 
 const PRIORITY_TAGS = { critical: "Must have", high: "Important", medium: "Helpful", optional: "Optional" } as const;
 
-function FactList({
-  facts,
-  actions,
-  reviewable,
-}: {
-  facts: ContextFact[];
-  actions: ContextActions;
-  reviewable?: boolean;
-}) {
+function FactItem({ fact, actions }: { fact: ContextFact; actions: ContextActions }) {
+  const key = factKey(fact);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const fieldRef = useRef<HTMLTextAreaElement>(null);
+  const editButtonRef = useRef<HTMLButtonElement>(null);
+  const wasEditing = useRef(false);
+  const fieldId = useId();
+
+  useEffect(() => {
+    if (editing) fieldRef.current?.focus();
+    else if (wasEditing.current) editButtonRef.current?.focus();
+    wasEditing.current = editing;
+  }, [editing]);
+
+  const trimmed = draft.trim();
+  const saveDisabled = actions.busy || !trimmed || trimmed === fact.value.trim();
+
+  function save() {
+    if (saveDisabled) return;
+    actions.onEditFact(key, trimmed);
+    setEditing(false);
+  }
+
+  function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setEditing(false);
+    }
+  }
+
+  const heading = (
+    <>
+      {fact.label}
+      <span className="muted context-fact-category"> · {categoryOf(fact.category).label}</span>
+    </>
+  );
+
+  if (editing) {
+    return (
+      <li className="context-fact context-fact-editing">
+        <label className="context-fact-label" htmlFor={fieldId}>
+          {heading}
+        </label>
+        <textarea
+          id={fieldId}
+          ref={fieldRef}
+          className="editor-input"
+          rows={3}
+          value={draft}
+          maxLength={MAX_FACT_VALUE}
+          onChange={(event) => setDraft(event.target.value)}
+          onKeyDown={onKeyDown}
+        />
+        <span className="context-fact-actions">
+          <button className="editor-edit-btn" type="button" disabled={saveDisabled} aria-label={`Save: ${fact.label}`} onClick={save}>
+            Save
+          </button>
+          <button className="editor-remove" type="button" aria-label={`Cancel editing: ${fact.label}`} onClick={() => setEditing(false)}>
+            Cancel
+          </button>
+        </span>
+      </li>
+    );
+  }
+
+  return (
+    <li className="context-fact">
+      <span className="context-fact-label">{heading}</span>
+      <span className="context-fact-value">{fact.value}</span>
+      <span className="context-fact-actions">
+        {fact.source === "ai" && !fact.approved && (
+          <button
+            className="editor-edit-btn"
+            type="button"
+            disabled={actions.busy}
+            aria-label={`Approve: ${fact.label}`}
+            onClick={() => actions.onApproveFact(key)}
+          >
+            Approve
+          </button>
+        )}
+        <button
+          ref={editButtonRef}
+          className="editor-edit-btn"
+          type="button"
+          disabled={actions.busy}
+          aria-label={`Edit: ${fact.label}`}
+          onClick={() => {
+            setDraft(fact.value);
+            setEditing(true);
+          }}
+        >
+          Edit
+        </button>
+        <button
+          className="editor-remove"
+          type="button"
+          disabled={actions.busy}
+          aria-label={`Remove: ${fact.label}`}
+          onClick={() => actions.onRemoveFact(key)}
+        >
+          Remove
+        </button>
+      </span>
+    </li>
+  );
+}
+
+function FactList({ facts, actions }: { facts: ContextFact[]; actions: ContextActions }) {
   return (
     <ul className="context-facts">
-      {facts.map((fact, index) => {
-        const key = factKey(fact);
-        return (
-          // biome-ignore lint/suspicious/noArrayIndexKey: Keys repeat only if the server sends duplicate facts.
-          <li className="context-fact" key={`${key}-${index}`}>
-            <span className="context-fact-label">
-              {fact.label}
-              <span className="muted context-fact-category"> · {categoryOf(fact.category).label}</span>
-            </span>
-            <span className="context-fact-value">{fact.value}</span>
-            {reviewable && (
-              <span className="context-fact-actions">
-                <button
-                  className="editor-edit-btn"
-                  type="button"
-                  disabled={actions.busy}
-                  aria-label={`Approve: ${fact.label}`}
-                  onClick={() => actions.onApproveFact(key)}
-                >
-                  Approve
-                </button>
-                <button
-                  className="editor-remove"
-                  type="button"
-                  disabled={actions.busy}
-                  aria-label={`Remove: ${fact.label}`}
-                  onClick={() => actions.onRemoveFact(key)}
-                >
-                  Remove
-                </button>
-              </span>
-            )}
-          </li>
-        );
-      })}
+      {facts.map((fact, index) => (
+        // biome-ignore lint/suspicious/noArrayIndexKey: Keys repeat only if the server sends duplicate facts.
+        <FactItem key={`${factKey(fact)}-${index}`} fact={fact} actions={actions} />
+      ))}
     </ul>
   );
 }
@@ -347,7 +455,7 @@ function StoryContextPanel({ context, actions }: { context: StoryContext; action
       {suggestions.length > 0 && (
         <div className="context-group">
           <h4 className="editor-subhead">AI suggestions</h4>
-          <FactList facts={suggestions} actions={actions} reviewable />
+          <FactList facts={suggestions} actions={actions} />
         </div>
       )}
       {approved.length > 0 && (
@@ -394,20 +502,29 @@ function CharacterRead({ plan }: { plan: ShotPlan }) {
       {plan.characters.length === 0 ? (
         <p className="muted">None yet.</p>
       ) : (
-        <ul className="cast-list">
-          {plan.characters.map((character, index) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: Characters render in plan order.
-            <li key={index}>
-              <strong>{character.name || "Unnamed character"}</strong>
-              {character.role ? ` · ${character.role}` : ""}
-              {[character.look, character.personality, character.voice].filter(Boolean).length > 0 && (
-                <span className="muted cast-detail">
-                  {[character.look, character.personality, character.voice].filter(Boolean).join(" · ")}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
+        <div className="bp-table-wrap">
+          <table className="bp-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Role</th>
+                <th>Look</th>
+                <th>Personality and voice</th>
+              </tr>
+            </thead>
+            <tbody>
+              {plan.characters.map((character, index) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: Characters render in plan order.
+                <tr key={index}>
+                  <td className="bp-id">{character.name || "—"}</td>
+                  <td>{character.role || "—"}</td>
+                  <td>{character.look || "—"}</td>
+                  <td>{[character.personality, character.voice].filter(Boolean).join(" ") || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -416,19 +533,29 @@ function CharacterRead({ plan }: { plan: ShotPlan }) {
 function LocationRead({ plan }: { plan: ShotPlan }) {
   return (
     <div className="editor-subsection">
-      <h4 className="editor-subhead">Places</h4>
+      <h4 className="editor-subhead">Locations</h4>
       {plan.locations.length === 0 ? (
         <p className="muted">None yet.</p>
       ) : (
-        <ul className="cast-list">
-          {plan.locations.map((location, index) => (
-            // biome-ignore lint/suspicious/noArrayIndexKey: Locations render in plan order.
-            <li key={index}>
-              <strong>{location.name || "Unnamed place"}</strong>
-              {location.description && <span className="muted cast-detail">{location.description}</span>}
-            </li>
-          ))}
-        </ul>
+        <div className="bp-table-wrap">
+          <table className="bp-table">
+            <thead>
+              <tr>
+                <th>Location</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              {plan.locations.map((location, index) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: Locations render in plan order.
+                <tr key={index}>
+                  <td className="bp-id">{location.name || "—"}</td>
+                  <td>{location.description || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       )}
     </div>
   );
@@ -436,44 +563,62 @@ function LocationRead({ plan }: { plan: ShotPlan }) {
 
 function SceneRead({ scene, sceneIndex }: { scene: Scene; sceneIndex: number }) {
   if (scene.shots.length === 0) return <p className="muted editor-scene-empty">No shots yet.</p>;
+  const places = Array.from(new Set(scene.shots.map((shot) => shot.location.trim()).filter(Boolean))).join(" · ");
   return (
-    <div className="shot-grid">
-      {scene.shots.map((shot, shotIndex) => (
-        // biome-ignore lint/suspicious/noArrayIndexKey: Shots render in scene order.
-        <article className="shot-card" key={shotIndex}>
-          <header className="shot-card-head">
-            <span className="shot-ref">{shotId(sceneIndex, shotIndex)}</span>
-            <span className="shot-meta">
-              {shot.seconds}s{shot.framing ? ` · ${shot.framing}` : ""}
-            </span>
-          </header>
-          {shot.action && <p className="shot-action">{shot.action}</p>}
-          <dl className="shot-props">
-            <dt>Camera movement</dt>
-            <dd>{shot.camera || "—"}</dd>
-            <dt>Who’s in it</dt>
-            <dd>{shot.characters.join(", ") || "None"}</dd>
-            <dt>Place</dt>
-            <dd>{shot.location || "—"}</dd>
-            <dt>Feeling</dt>
-            <dd>{shot.emotion || "—"}</dd>
-            <dt>Sound</dt>
-            <dd>{shot.sound || "—"}</dd>
-          </dl>
-          {shot.dialogue.length > 0 && (
-            <ul className="shot-dialogue">
-              {shot.dialogue.map((line, lineIndex) => (
-                // biome-ignore lint/suspicious/noArrayIndexKey: Dialogue lines render in shot order.
-                <li key={lineIndex}>
-                  <strong>{line.speaker}</strong> “{line.line}”{" "}
-                  {line.delivery && <span className="muted">({line.delivery})</span>}
-                </li>
-              ))}
-            </ul>
-          )}
-        </article>
-      ))}
-    </div>
+    <>
+      {places && <p className="muted bp-scene-sub">{places}</p>}
+      <div className="bp-table-wrap">
+        <table className="bp-table bp-shots">
+          <thead>
+            <tr>
+              <th>Shot</th>
+              <th>Sec</th>
+              <th>Framing · Camera</th>
+              <th>Who · Location</th>
+              <th>What we see</th>
+              <th>Dialogue</th>
+              <th>Emotion</th>
+              <th>Sound</th>
+            </tr>
+          </thead>
+          <tbody>
+            {scene.shots.map((shot, shotIndex) => (
+              // biome-ignore lint/suspicious/noArrayIndexKey: Shots render in scene order.
+              <tr key={shotIndex}>
+                <td className="bp-id">{shotId(sceneIndex, shotIndex)}</td>
+                <td className="bp-num">{shot.seconds}</td>
+                <td>
+                  {shot.framing || "—"}
+                  {shot.camera && <span className="muted bp-sub">{shot.camera}</span>}
+                </td>
+                <td>
+                  {shot.characters.join(", ") || "None"}
+                  {shot.location && <span className="muted bp-sub">{shot.location}</span>}
+                </td>
+                <td>{shot.action || "—"}</td>
+                <td>
+                  {shot.dialogue.length === 0 ? (
+                    "—"
+                  ) : (
+                    <ul className="bp-dialogue">
+                      {shot.dialogue.map((line, lineIndex) => (
+                        // biome-ignore lint/suspicious/noArrayIndexKey: Dialogue lines render in shot order.
+                        <li key={lineIndex}>
+                          <strong>{line.speaker}</strong> “{line.line}”
+                          {line.delivery && <span className="muted"> ({line.delivery})</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </td>
+                <td>{shot.emotion || "—"}</td>
+                <td>{shot.sound || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 

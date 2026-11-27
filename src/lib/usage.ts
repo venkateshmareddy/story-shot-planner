@@ -45,3 +45,17 @@ export function isUsageRecord(value: unknown): value is UsageRecord {
     typeof record.totalTokens === "number"
   );
 }
+
+/** One record for a user action that took several model calls; models are the distinct ones the responses named. */
+export function sumUsage(step: UsageStep, records: readonly UsageRecord[]): UsageRecord {
+  const total = (key: "inputTokens" | "outputTokens" | "totalTokens") =>
+    records.reduce((sum, record) => sum + count(record[key]), 0);
+  const model = [...new Set(records.map((record) => record.model).filter(Boolean))].join(", ");
+  return {
+    step,
+    model,
+    inputTokens: total("inputTokens"),
+    outputTokens: total("outputTokens"),
+    totalTokens: total("totalTokens"),
+  };
+}

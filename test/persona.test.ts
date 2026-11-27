@@ -10,8 +10,9 @@ import {
   SOURCE_RULES,
 } from "../src/lib/server/prompts.ts";
 
-const STEPS = ["draft", "interview", "plan", "refine"] as const;
-const ANALYSIS_STEPS = ["draft", "plan", "refine"] as const;
+const STEPS = ["draft", "interview", "plan_outline", "plan_scene", "edit_plan", "edit_scene"] as const;
+const ANALYSIS_STEPS = ["draft", "plan_outline", "edit_plan"] as const;
+const STYLE = { interview: DISCOVERY_STYLE, plan_scene: "", edit_scene: "" } as Partial<Record<(typeof STEPS)[number], string>>;
 
 test("every stage and format carries the one Creative Director persona", () => {
   for (const step of STEPS) {
@@ -26,8 +27,8 @@ test("every stage and format carries the one Creative Director persona", () => {
 test("composition order: source rules, persona, plain language, style, then stage text", () => {
   for (const step of STEPS) {
     const composed = composeInstructions(step, "short_film");
-    const style = step === "interview" ? DISCOVERY_STYLE : ANALYSIS_STYLE;
-    assert.ok(composed.startsWith([SOURCE_RULES, DIRECTOR_PERSONA, PLAIN_LANGUAGE, style].join("\n")), step);
+    const style = STYLE[step] ?? ANALYSIS_STYLE;
+    assert.ok(composed.startsWith([SOURCE_RULES, DIRECTOR_PERSONA, PLAIN_LANGUAGE, style].filter(Boolean).join("\n")), step);
   }
 });
 
@@ -37,7 +38,7 @@ test("interview uses the discovery style and never the analysis style", () => {
   assert.ok(!composed.includes(ANALYSIS_STYLE));
 });
 
-test("draft, plan and refine use the analysis style and never the discovery style", () => {
+test("draft, plan outline and the plan-edit decision use the analysis style and never the discovery style", () => {
   for (const step of ANALYSIS_STEPS) {
     const composed = composeInstructions(step, "short_film");
     assert.ok(composed.includes(ANALYSIS_STYLE), step);
@@ -49,5 +50,13 @@ test("stage texts do not restate a second identity", () => {
   for (const step of STEPS) {
     const composed = composeInstructions(step, "short_film").replace(DIRECTOR_PERSONA, "");
     assert.ok(!/\bYou are an?\b/i.test(composed), step);
+  }
+});
+
+test("scene shots are data, so the scene calls carry neither conversation style", () => {
+  for (const step of ["plan_scene", "edit_scene"] as const) {
+    const composed = composeInstructions(step, "short_film");
+    assert.ok(!composed.includes(ANALYSIS_STYLE), step);
+    assert.ok(!composed.includes(DISCOVERY_STYLE), step);
   }
 });

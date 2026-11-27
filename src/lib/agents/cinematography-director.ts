@@ -1,6 +1,12 @@
 import type { ShotPlan } from "@/lib/story-planning";
 import { specialistOutput } from "./schemas";
-import { clip, type SpecialistDefinition, shotId, specialistInstructions } from "./shared";
+import {
+  clip,
+  SPECIALIST_MAX_OUTPUT_TOKENS,
+  type SpecialistDefinition,
+  shotId,
+  specialistInstructions,
+} from "./shared";
 import type { ImageReference } from "./types";
 
 export const MAX_CONTEXT_REFERENCES = 4;
@@ -26,7 +32,7 @@ export const cinematographyDirector: SpecialistDefinition = {
   fields,
   contextCategories: ["visuals", "lighting", "locations", "references", "genre", "intent", "format"],
   schema: specialistOutput(fields),
-  maxOutputTokens: 1_800,
+  maxOutputTokens: SPECIALIST_MAX_OUTPUT_TOKENS,
   instructions: specialistInstructions(
     "Director of Photography",
     "You think like a professional cinematographer: judge every visual choice by how well it expresses the shot's emotion and the film's intent, and keep coverage achievable on a short-film shoot. When plan.references is present, it describes the filmmaker's reference images: draw on their composition, lighting, angle, colour and mood where they suit the story, and name the reference you draw on.",

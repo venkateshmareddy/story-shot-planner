@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { PLAN_SOURCE_LIMIT, SOURCE_INLINE_LIMIT, type StorySource, storyForStep } from "../src/lib/source-text.ts";
-import { importDocument } from "../src/lib/studio-agent.ts";
+import { MAX_REFINE_SOURCE_CHARACTERS, type ShotPlan } from "../src/lib/story-planning.ts";
+import { askDirector, directorSource, importDocument } from "../src/lib/studio-agent.ts";
 import {
   classifyUpload,
   routeLongText,
@@ -129,4 +130,36 @@ test("a saved session with a malformed story source still loads, without the bad
   assert.equal(loaded.sessions.length, 1);
   assert.equal(loaded.sessions[0].source, undefined);
   assert.equal(isStorySource({ name: "x.txt", kind: "txt", text: "hi", characters: 2 }), true);
+});
+
+const emptyPlan: ShotPlan = { title: "T", logline: "", intent: "", characters: [], locations: [], scenes: [], reviewNotes: [] };
+
+test("directorSource sends the imported story or its digest under its heading, and nothing without a source", () => {
+  assert.equal(directorSource("The Lighthouse", undefined), undefined);
+  const short = sourceOf("Mara finds the letter.");
+  assert.equal(directorSource("The Lighthouse", short), "The Lighthouse\n\nStory source (02_full-story.pdf):\nMara finds the letter.");
+  const long = longStory(100_000);
+  const digested = directorSource("The Lighthouse", sourceOf(long, "Condensed story."));
+  assert.ok(digested?.includes("condensed from 100,000 characters"));
+  assert.ok(digested?.endsWith("Condensed story."));
+  assert.ok((digested?.length ?? 0) <= MAX_REFINE_SOURCE_CHARACTERS);
+  assert.equal(directorSource("The Lighthouse", sourceOf(long)), undefined);
+});
+
+test("askDirector includes the source only when there is one", async () => {
+  const originalFetch = globalThis.fetch;
+  const bodies: Record<string, unknown>[] = [];
+  globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+    bodies.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+    return new Response(JSON.stringify({ reply: "Done", plan: null }), { status: 200 });
+  }) as typeof fetch;
+  try {
+    const source = directorSource("The Lighthouse", sourceOf("Mara finds the letter."));
+    await askDirector({ plan: emptyPlan, messages: [], message: "Tighten scene 1", source });
+    await askDirector({ plan: emptyPlan, messages: [], message: "Tighten scene 1" });
+    assert.equal(bodies[0].source, source);
+    assert.ok(!("source" in bodies[1]));
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { afterEach, test } from "node:test";
 import { answerFor, DISCOVERY_ACTIONS } from "../src/lib/quick-actions.ts";
 import {
   DECIDE_ANSWER,
@@ -9,7 +9,13 @@ import {
   type StoryContext,
   toCollected,
 } from "../src/lib/story-context.ts";
-import { directorCollected, parseStoryContext } from "../src/lib/studio-agent.ts";
+import {
+  askInterview,
+  directorCollected,
+  MAX_ANSWER_OPTION_CHARACTERS,
+  parseAnswerOptions,
+  parseStoryContext,
+} from "../src/lib/studio-agent.ts";
 
 const fact = (label: string, source: "user" | "ai" = "user") => ({
   category: "concept" as const,
@@ -53,4 +59,49 @@ test("directorCollected flattens the context when present and falls back to coll
   assert.deepEqual(directorCollected(context, [{ label: "old", detail: "x" }]), toCollected(context, 40));
   const legacy = Array.from({ length: 50 }, (_, i) => ({ label: `L${i}`, detail: "d" }));
   assert.equal(directorCollected(undefined, legacy).length, 40);
+});
+
+test("parseAnswerOptions accepts up to four short answers and rejects anything else", () => {
+  assert.deepEqual(parseAnswerOptions([" A lighthouse keeper ", "A fisherman", "a fisherman"]), ["A lighthouse keeper", "A fisherman"]);
+  assert.deepEqual(parseAnswerOptions([]), []);
+  for (const bad of [
+    undefined,
+    null,
+    "A, B",
+    ["A", "B", "C", "D", "E"],
+    ["A", ""],
+    ["A", 3],
+    ["x".repeat(MAX_ANSWER_OPTION_CHARACTERS + 1)],
+  ]) {
+    assert.deepEqual(parseAnswerOptions(bad), [], JSON.stringify(bad));
+  }
+  assert.deepEqual(parseAnswerOptions(["x".repeat(MAX_ANSWER_OPTION_CHARACTERS)]), ["x".repeat(MAX_ANSWER_OPTION_CHARACTERS)]);
+});
+
+const originalFetch = globalThis.fetch;
+afterEach(() => {
+  globalThis.fetch = originalFetch;
+});
+
+function reply(body: unknown) {
+  globalThis.fetch = (async () =>
+    new Response(JSON.stringify(body), { status: 200, headers: { "Content-Type": "application/json" } })) as typeof fetch;
+}
+
+test("askInterview returns a question's answer options, and none for a finished interview", async () => {
+  const turn = { note: "", rationale: "", collected: [], context: { facts: [], unresolved: [] } };
+  reply({ ...turn, status: "ask", question: "Who is it about?", options: ["A keeper", "A child"] });
+  const asked = await askInterview("The Lighthouse", []);
+  assert.ok(asked.ok);
+  assert.deepEqual(asked.options, ["A keeper", "A child"]);
+
+  reply({ ...turn, status: "ask", question: "Who is it about?" });
+  const without = await askInterview("The Lighthouse", []);
+  assert.ok(without.ok);
+  assert.deepEqual(without.options, []);
+
+  reply({ ...turn, status: "complete", recommendation: "Plan it", options: ["Ignored"] });
+  const done = await askInterview("The Lighthouse", []);
+  assert.ok(done.ok);
+  assert.deepEqual(done.options, []);
 });

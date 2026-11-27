@@ -41,16 +41,24 @@ export type ContextFact = {
   source: FactSource;
   /** User facts are approved; AI facts stay unapproved until the filmmaker approves them. */
   approved: boolean;
+  /** Index into `answered` of the answer this filmmaker fact was taken from; editing that answer retracts it. */
+  answer?: number;
 };
+
+/** A fact the filmmaker removed; the same key and value is never re-added by the AI. */
+export type RemovedFact = { key: string; value: string };
 
 export type StoryContext = {
   facts: ContextFact[];
   /** Open questions or ambiguities the AI still sees. */
   unresolved: string[];
+  removed?: RemovedFact[];
 };
 
 export const MAX_CONTEXT_FACTS = 80;
 export const MAX_UNRESOLVED = 8;
+export const MAX_REMOVED_FACTS = 40;
+export const MAX_FACT_VALUE = 600;
 export const EMPTY_CONTEXT: StoryContext = { facts: [], unresolved: [] };
 
 export function categoryOf(id: StoryCategoryId): StoryCategory {
@@ -59,6 +67,20 @@ export function categoryOf(id: StoryCategoryId): StoryCategory {
 
 export function factKey(fact: Pick<ContextFact, "category" | "label">): string {
   return `${fact.category}:${fact.label.trim().toLowerCase().replace(/\s+/g, " ")}`;
+}
+
+export function sameFactValue(a: string, b: string): boolean {
+  const normal = (text: string) => text.trim().toLowerCase().replace(/\s+/g, " ");
+  return normal(a) === normal(b);
+}
+
+function isRemoved(context: StoryContext, fact: ContextFact): boolean {
+  const key = factKey(fact);
+  return (context.removed ?? []).some((item) => item.key === key && sameFactValue(item.value, fact.value));
+}
+
+function withRemoved(context: StoryContext): Pick<StoryContext, "removed"> {
+  return context.removed?.length ? { removed: context.removed.slice(-MAX_REMOVED_FACTS) } : {};
 }
 
 /**
@@ -73,6 +95,7 @@ export function mergeFacts(context: StoryContext, updates: ContextFact[]): Story
     const label = update.label.trim();
     if (!value || !label) continue;
     const next: ContextFact = { ...update, label, value, approved: update.source === "user" ? true : update.approved };
+    if (isRemoved(context, next)) continue;
     const index = facts.findIndex((fact) => factKey(fact) === factKey(next));
     if (index === -1) {
       facts.push(next);
@@ -87,20 +110,50 @@ export function mergeFacts(context: StoryContext, updates: ContextFact[]): Story
     const dropIndex = facts.findIndex((fact) => fact.source === "ai" && !fact.approved);
     facts.splice(dropIndex === -1 ? 0 : dropIndex, 1);
   }
-  return { facts, unresolved: context.unresolved.slice(0, MAX_UNRESOLVED) };
+  return { facts, unresolved: context.unresolved.slice(0, MAX_UNRESOLVED), ...withRemoved(context) };
 }
 
 export function withUnresolved(context: StoryContext, unresolved: string[]): StoryContext {
   const clean = [...new Set(unresolved.map((item) => item.trim()).filter(Boolean))].slice(0, MAX_UNRESOLVED);
-  return { facts: context.facts, unresolved: clean };
+  return { facts: context.facts, unresolved: clean, ...withRemoved(context) };
 }
 
 export function approveFact(context: StoryContext, key: string): StoryContext {
   return { ...context, facts: context.facts.map((fact) => (factKey(fact) === key ? { ...fact, approved: true } : fact)) };
 }
 
+/** Remove a fact and remember it, so the AI doesn't add the same detail back. */
 export function removeFact(context: StoryContext, key: string): StoryContext {
-  return { ...context, facts: context.facts.filter((fact) => factKey(fact) !== key) };
+  const target = context.facts.find((fact) => factKey(fact) === key);
+  if (!target) return context;
+  const removed = [...(context.removed ?? []).filter((item) => item.key !== key), { key, value: target.value }];
+  return {
+    ...context,
+    facts: context.facts.filter((fact) => factKey(fact) !== key),
+    removed: removed.slice(-MAX_REMOVED_FACTS),
+  };
+}
+
+/** The filmmaker rewrote a fact: it becomes their approved decision, no longer tied to an answer. Empty text is ignored. */
+export function editFact(context: StoryContext, key: string, value: string): StoryContext {
+  const text = value.trim().slice(0, MAX_FACT_VALUE);
+  if (!text) return context;
+  return {
+    ...context,
+    facts: context.facts.map((fact) => {
+      if (factKey(fact) !== key) return fact;
+      const { answer: _answer, ...rest } = fact;
+      return { ...rest, value: text, source: "user", approved: true };
+    }),
+  };
+}
+
+/** An earlier answer was edited: drop the filmmaker facts taken from it so the next turn re-reads the new wording. */
+export function retractAnswerFacts(context: StoryContext, answerIndex: number): StoryContext {
+  return {
+    ...context,
+    facts: context.facts.filter((fact) => !(fact.source === "user" && fact.answer === answerIndex)),
+  };
 }
 
 /** Categories with no facts yet, most important first. */

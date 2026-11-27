@@ -16,9 +16,12 @@ function releaseMicrophone(stream?: MediaStream) {
 }
 
 export function VoiceRecorder({
+  busy = false,
   onRecording,
   onActiveChange,
 }: {
+  /** A reply is pending: no new recording may start, but one in progress can still be stopped. */
+  busy?: boolean;
   onRecording: (file: File) => void;
   onActiveChange: (active: boolean) => void;
 }) {
@@ -44,6 +47,7 @@ export function VoiceRecorder({
   }, []);
 
   async function start() {
+    if (busy) return;
     setError("");
     if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
       setError("Microphone recording needs a supported browser on HTTPS or localhost. You can still upload audio.");
@@ -126,14 +130,15 @@ export function VoiceRecorder({
   }
 
   const recording = phase === "recording";
+  const waiting = busy && phase === "idle";
   return (
     <div className="voice-recorder">
       <button
         className={`icon-btn${recording ? " recording" : ""}`}
         type="button"
         aria-label={recording ? "Stop recording" : "Record voice note"}
-        title={recording ? "Stop recording" : "Record voice note"}
-        disabled={phase === "permission" || phase === "finishing"}
+        title={recording ? "Stop recording" : waiting ? "Wait for the reply before recording" : "Record voice note"}
+        disabled={phase === "permission" || phase === "finishing" || waiting}
         onClick={recording ? stop : () => void start()}
       >
         {recording ? (

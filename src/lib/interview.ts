@@ -1,16 +1,43 @@
 import { z } from "zod";
 import {
   type ContextFact,
+  DECIDE_ANSWER,
   detectDiscoveryCommand,
   factKey,
   mergeFacts,
+  SKIPPED_ANSWER,
   type StoryContext,
+  sameFactValue,
   toCollected,
   withUnresolved,
 } from "./story-context";
 import { storyCategorySchema } from "./story-context-schema";
+import { MAX_ANSWER_CHARACTERS } from "./story-input";
 
 export const MAX_INTERVIEW_TURNS = 12;
+
+/** Text sent after discovery is complete; it goes to the plan, not the interview. */
+export const EXTRA_DIRECTION_QUESTION = "Additional direction";
+export const MAX_EXTRA_DIRECTIONS = 8;
+export const MAX_PLAN_ANSWERS = MAX_INTERVIEW_TURNS + MAX_EXTRA_DIRECTIONS;
+
+/**
+ * Adds a late direction without ever blocking the filmmaker: past MAX_EXTRA_DIRECTIONS (or MAX_PLAN_ANSWERS) it is
+ * merged into the last direction, keeping the newest text when the merged answer is too long. Pure.
+ */
+export function addExtraDirection(answered: InterviewExchange[], text: string): InterviewExchange[] {
+  const direction = text.trim().slice(0, MAX_ANSWER_CHARACTERS);
+  if (!direction) return answered;
+  const extras = answered.filter((exchange) => exchange.question === EXTRA_DIRECTION_QUESTION).length;
+  if (extras < MAX_EXTRA_DIRECTIONS && answered.length < MAX_PLAN_ANSWERS) {
+    return [...answered, { question: EXTRA_DIRECTION_QUESTION, answer: direction }];
+  }
+  const lastIndex = answered.findLastIndex((exchange) => exchange.question === EXTRA_DIRECTION_QUESTION);
+  const index = lastIndex === -1 ? answered.length - 1 : lastIndex;
+  const merged = `${answered[index].answer}\n${direction}`;
+  const answer = merged.length <= MAX_ANSWER_CHARACTERS ? merged : merged.slice(merged.length - MAX_ANSWER_CHARACTERS).replace(/^\S*\s/, "");
+  return answered.map((exchange, position) => (position === index ? { question: EXTRA_DIRECTION_QUESTION, answer } : exchange));
+}
 
 export const collectedItem = z.object({
   label: z.string(),
@@ -30,6 +57,8 @@ export const interviewTurnOutput = z.object({
   note: z.string(),
   complete: z.boolean(),
   question: z.string(),
+  /** Short tappable answer choices; [] for an open question. */
+  options: z.array(z.string()),
   rationale: z.string(),
   recommendation: z.string(),
   facts: z.array(interviewFact),
@@ -42,7 +71,7 @@ export type InterviewExchange = { question: string; answer: string };
 type TurnState = { note: string; context: StoryContext; collected: CollectedItem[] };
 
 export type ResolvedInterviewTurn =
-  | ({ status: "ask"; question: string; rationale: string } & TurnState)
+  | ({ status: "ask"; question: string; options: string[]; rationale: string } & TurnState)
   | ({ status: "complete"; recommendation: string } & TurnState);
 
 function normalizeQuestion(value: string): string {
@@ -116,6 +145,8 @@ const clip = (text: string, max: number) => text.trim().slice(0, max);
 
 const MAX_NOTE_CHARACTERS = 200;
 const MAX_RATIONALE_CHARACTERS = 200;
+export const MAX_OPTIONS = 4;
+export const MAX_OPTION_CHARACTERS = 60;
 
 function clipAtWord(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim();
@@ -123,6 +154,21 @@ function clipAtWord(text: string, max: number): string {
   const cut = flat.slice(0, max - 1);
   const space = cut.lastIndexOf(" ");
   return `${(space > max / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:.–—-]+$/, "")}…`;
+}
+
+/** Tappable answer choices: trimmed, non-empty, de-duplicated, at most MAX_OPTIONS, each clipped at a word boundary. */
+export function tidyOptions(options: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const option of options) {
+    const text = clipAtWord(option, MAX_OPTION_CHARACTERS);
+    const key = text.toLowerCase();
+    if (!text || seen.has(key)) continue;
+    seen.add(key);
+    result.push(text);
+    if (result.length === MAX_OPTIONS) break;
+  }
+  return result;
 }
 
 /** The filmmaker's latest answer is a whole-message stop command ("stop", "proceed", "generate plan"…). */
@@ -136,12 +182,13 @@ export function stopTurn(context: StoryContext): ResolvedInterviewTurn {
   return { status: "complete", note: "", recommendation: STOP_RECOMMENDATION, context, collected: toCollected(context) };
 }
 
-const sameValue = (a: string, b: string) => a.trim().toLowerCase().replace(/\s+/g, " ") === b.trim().toLowerCase().replace(/\s+/g, " ");
-
 /**
- * A fact is the filmmaker's only when they actually said it. Two deterministic guards:
- * 1. Title-only first turn (no answers, no imported story): nothing has been said yet, so every fact is an AI guess.
- * 2. The model can't promote its own unchanged earlier suggestion to "user" — only the filmmaker's Approve does that.
+ * A fact is the filmmaker's only when they actually said it. Deterministic guards:
+ * 1. A restatement of an existing filmmaker fact (same key and value) stays theirs, tied to its original answer.
+ * 2. Title-only first turn (no answers, no imported story): nothing has been said yet, so every fact is an AI guess.
+ * 3. A skipped or "you decide" latest answer states nothing, so any new detail is the AI's choice.
+ * 4. The model can't promote its own unchanged earlier suggestion to "user" — only the filmmaker's Approve does that.
+ * Filmmaker facts record the answer they came from, so editing that answer can retract them.
  */
 export function attributeFacts(
   facts: InterviewTurnOutput["facts"],
@@ -150,16 +197,19 @@ export function attributeFacts(
   titleOnly: boolean,
 ): ContextFact[] {
   const nothingSaid = titleOnly && answered.length === 0;
+  const latest = answered.at(-1)?.answer;
+  const deferred = latest === DECIDE_ANSWER || latest === SKIPPED_ANSWER;
   return facts.map((fact) => {
     const label = clip(fact.label, 80);
     const value = clip(fact.value, 600);
+    const existing = context.facts.find((item) => factKey(item) === factKey({ category: fact.category, label }));
+    const unchanged = existing !== undefined && sameFactValue(existing.value, value);
+    if (fact.source === "user" && existing?.source === "user" && unchanged) return { ...existing };
     let source = fact.source;
-    if (source === "user" && nothingSaid) source = "ai";
-    if (source === "user") {
-      const existing = context.facts.find((item) => factKey(item) === factKey({ category: fact.category, label }));
-      if (existing && existing.source === "ai" && !existing.approved && sameValue(existing.value, value)) source = "ai";
-    }
-    return { category: fact.category, label, value, source, approved: source === "user" };
+    if (source === "user" && (nothingSaid || deferred)) source = "ai";
+    if (source === "user" && existing?.source === "ai" && !existing.approved && unchanged) source = "ai";
+    const answer = source === "user" && answered.length > 0 ? { answer: answered.length - 1 } : {};
+    return { category: fact.category, label, value, source, approved: source === "user", ...answer };
   });
 }
 
@@ -194,5 +244,11 @@ export function resolveInterviewTurn(
     return { status: "complete", recommendation: clip(output.recommendation, 600) || DEFAULT_RECOMMENDATION, ...state };
   }
 
-  return { status: "ask", question, rationale: clipAtWord(output.rationale, MAX_RATIONALE_CHARACTERS), ...state };
+  return {
+    status: "ask",
+    question,
+    options: tidyOptions(output.options),
+    rationale: clipAtWord(output.rationale, MAX_RATIONALE_CHARACTERS),
+    ...state,
+  };
 }

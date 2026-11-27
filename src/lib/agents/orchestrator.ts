@@ -1,15 +1,21 @@
-import type { z } from "zod";
-import type { RefineResult } from "@/lib/server/refine";
+import {
+  type CallModel,
+  deadline,
+  type ModelErrorMetadata,
+  ModelOutputError,
+  modelErrorMetadata,
+  untilAborted,
+} from "@/lib/server/openai";
 import { ANALYSIS_STYLE, DIRECTOR_PERSONA, PLAIN_LANGUAGE, SOURCE_RULES } from "@/lib/server/prompts";
+import type { RefineResult } from "@/lib/server/refine";
 import { categoryOf, PRIORITY_ORDER } from "@/lib/story-context";
-import type { RefineRequest, ShotPlan } from "@/lib/story-planning";
-import type { UsageRecord, UsageStep } from "@/lib/usage";
+import type { RefineRequest } from "@/lib/story-planning";
+import type { UsageRecord } from "@/lib/usage";
 import { cinematographyDirector } from "./cinematography-director";
 import { continuityReviewer } from "./continuity-reviewer";
 import { editingDirector } from "./editing-director";
 import { mergeEdits, sanitizeEdits, type ValidEdit } from "./merge";
 import { domainScore, selectSpecialists } from "./router";
-import { findTargetScenes, isSceneStructureEdit } from "./scope";
 import { anySpecialistOutput, type SpecialistOutput, synthesisOutput } from "./schemas";
 import {
   clip,
@@ -38,39 +44,23 @@ export const SPECIALISTS: Readonly<Record<SpecialistId, SpecialistDefinition>> =
   "continuity-reviewer": continuityReviewer,
 });
 
-export type ModelCall = {
-  step: UsageStep;
-  instructions: string;
-  input: string;
-  schema: z.ZodType;
-  maxOutputTokens: number;
-  signal: AbortSignal;
-};
-
-/** Output is treated as unknown and re-validated by the orchestrator. */
-export type CallModel = (call: ModelCall) => Promise<{ output: unknown; usage: UsageRecord }>;
+export { type CallModel, type ModelCall, ModelOutputError } from "@/lib/server/openai";
 
 export type DirectorDeps = {
   callModel: CallModel;
   refine: (input: RefineRequest) => Promise<RefineResult>;
 };
 
+/** Metadata-only diagnosis of one failed specialist call. */
+export type SpecialistFailure = ModelErrorMetadata & { id: SpecialistId; maxOutputTokens: number };
+
 export type DirectorOptions = {
   signal?: AbortSignal;
   specialistTimeoutMs?: number;
   synthesisTimeoutMs?: number;
+  /** Called once per failed specialist, whether or not the rest of the team succeeded. */
+  onSpecialistFailure?: (failure: SpecialistFailure) => void;
 };
-
-/** A model call that returned (and cost tokens) but produced no usable output. */
-export class ModelOutputError extends Error {
-  constructor(
-    message: string,
-    readonly usage: UsageRecord,
-  ) {
-    super(message);
-    this.name = "ModelOutputError";
-  }
-}
 
 /** Every selected specialist failed. */
 export class DirectorError extends Error {
@@ -83,9 +73,9 @@ export class DirectorError extends Error {
   }
 }
 
-const SPECIALIST_TIMEOUT_MS = 60_000;
-const SYNTHESIS_TIMEOUT_MS = 30_000;
-const SYNTHESIS_MAX_OUTPUT_TOKENS = 1_200;
+export const SPECIALIST_TIMEOUT_MS = 90_000;
+export const SYNTHESIS_TIMEOUT_MS = 30_000;
+export const SYNTHESIS_MAX_OUTPUT_TOKENS = 1_200;
 // Total findings handed to synthesis stays at the old 5 x 3; fewer specialists get deeper coverage each.
 const SYNTHESIS_RECOMMENDATION_BUDGET = 15;
 const SYNTHESIS_MAX_ESTABLISHED = 8;
@@ -99,7 +89,7 @@ const SYNTHESIS_INSTRUCTIONS = [
   PLAIN_LANGUAGE,
   ANALYSIS_STYLE,
   "Your specialist team has studied the plan for this request; now you answer the filmmaker yourself. The input holds the filmmaker's message, what the filmmaker has established (established, may be empty), each specialist's findings by discipline (specialists), disciplines that could not respond (failed), deterministic edit conflicts (mergeConflicts) and the plan changes proposed for the filmmaker's approval (proposedChanges).",
-  'reply: ONE coherent Creative Director voice speaking to the filmmaker, never a relay of separate reports ("the Camera expert says"). Answer the message first, in the opening sentence or two. Match the length to the request: about 60-150 words for a focused question, up to about 350 words for a review across several areas. When two or more areas matter, give each a label line such as "Story:", "Camera:", "Sound:", "Editing:" or "Consistency:" followed by "- " bullets, the most important point first and tied to scene or shot ids. Say each point once, even when several specialists raise it. Where specialists disagree or a choice trades one quality for another, explain the trade-off and name the alternative. Keep three things visibly distinct: what the filmmaker established, what is assumed (say so), and what you recommend. Use only findings present in the input; add no new recommendations. If proposedChanges is not empty, end by saying those changes wait for their approval; if failed is not empty, say in one short clause which area could not respond.',
+  'reply: ONE coherent Creative Director voice speaking to the filmmaker, never a relay of separate reports ("the Camera expert says"). The first line is a one-line plain answer to the message. Match the length to the request: about 60-150 words for a focused question, up to about 350 words for a review across several areas. When two or more areas matter, give each a label line such as "Story:", "Camera:", "Sound:", "Editing:" or "Consistency:" followed by "- " bullets, the most important point first and tied to scene or shot ids. Say each point once, even when several specialists raise it. Where specialists disagree or a choice trades one quality for another, explain the trade-off and name the alternative. Keep three things visibly distinct: what the filmmaker established, what is assumed (say so), and what you recommend. Use only findings present in the input; add no new recommendations. If proposedChanges is not empty, end by saying those changes wait for their approval; if failed is not empty, say in one short clause which area could not respond.',
   "conflicts: one sentence per genuine disagreement or trade-off between specialists, including every mergeConflicts entry, naming the alternative the filmmaker could choose; [] when there is none.",
 ].join("\n");
 
@@ -108,30 +98,6 @@ type SpecialistResult = {
   output: SpecialistOutput;
   usage: UsageRecord;
 };
-
-function deadline(parent: AbortSignal | undefined, ms: number) {
-  const timeout = AbortSignal.timeout(ms);
-  return parent ? AbortSignal.any([parent, timeout]) : timeout;
-}
-
-/** Settles on abort even if the callee ignores the signal. */
-function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason);
-  return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason);
-    signal.addEventListener("abort", onAbort, { once: true });
-    promise.then(
-      (value) => {
-        signal.removeEventListener("abort", onAbort);
-        resolve(value);
-      },
-      (error: unknown) => {
-        signal.removeEventListener("abort", onAbort);
-        reject(error);
-      },
-    );
-  });
-}
 
 function approvedContext(input: DirectorRequest, id: SpecialistId) {
   const collected = (input.collected ?? [])
@@ -176,12 +142,14 @@ async function consult(
   deps: DirectorDeps,
   options: DirectorOptions,
 ): Promise<SpecialistResult> {
-  const signal = deadline(options.signal, options.specialistTimeoutMs ?? SPECIALIST_TIMEOUT_MS);
+  const timeoutMs = options.specialistTimeoutMs ?? SPECIALIST_TIMEOUT_MS;
+  const signal = deadline(options.signal, timeoutMs);
   const payload = {
     message: input.message,
     recent: input.messages.slice(-4).map(({ role, text }) => ({ role, text: clip(text, 300) })),
     ...projectContext(input, definition),
     decisions: recentDecisions(input.decisions),
+    ...(definition.readsSource && input.source ? { source: input.source } : {}),
     plan: definition.buildContext(input.plan, input.references),
   };
   const { output, usage } = await untilAborted(
@@ -192,14 +160,25 @@ async function consult(
       schema: definition.schema,
       maxOutputTokens: definition.maxOutputTokens,
       signal,
+      timeoutMs,
     }),
     signal,
   );
   const parsed = anySpecialistOutput.safeParse(output);
   if (!parsed.success || !parsed.data.summary.trim()) {
-    throw new ModelOutputError("Invalid specialist output", usage);
+    throw new ModelOutputError("Invalid specialist output", usage, "invalid_output");
   }
   return { id: definition.id, output: parsed.data, usage };
+}
+
+export function describeSpecialistFailure(id: SpecialistId, cause: unknown): SpecialistFailure {
+  return { id, ...modelErrorMetadata(cause), maxOutputTokens: SPECIALISTS[id].maxOutputTokens };
+}
+
+/** Shown when every selected specialist failed. */
+export function directorFailureMessage(failed: readonly SpecialistId[]) {
+  const who = failed.length === 1 ? `The ${SPECIALIST_LABELS[failed[0]]} expert` : "The creative team";
+  return `${who} couldn’t finish this time. Try again, or ask about one scene.`;
 }
 
 function toRecommendations(results: SpecialistResult[]): Recommendation[] {
@@ -300,42 +279,19 @@ async function synthesize(
   }
 }
 
-function sceneCode(index: number) {
-  return `S${String(index + 1).padStart(2, "0")}`;
-}
-
-function scopedMessage(message: string, targets: number[]) {
-  const scenes = targets.map((index) => `Scene ${index + 1}`).join(", ");
-  return `${message}\n\n[Scope: this plan holds only ${scenes} of the film, in that order. Revise only these scenes and return exactly ${targets.length} scene(s) in the same order. Refer to scenes and shots by their film numbers (${sceneCode(targets[0])} is the first scene here).]`;
-}
-
-function appendNewByName<T extends { name: string }>(existing: T[], incoming: readonly T[]) {
-  const known = new Set(existing.map(({ name }) => name.trim().toLowerCase()));
-  for (const item of incoming) {
-    const key = item.name.trim().toLowerCase();
-    if (!key || known.has(key)) continue;
-    known.add(key);
-    existing.push(structuredClone(item));
-  }
-}
-
-/** null when the scoped result doesn't map 1:1 onto the targeted scenes. */
-function spliceScenes(full: ShotPlan, targets: number[], scoped: ShotPlan): ShotPlan | null {
-  if (scoped.scenes.length !== targets.length) return null;
-  const plan = structuredClone(full);
-  targets.forEach((sceneIndex, position) => {
-    plan.scenes[sceneIndex] = structuredClone(scoped.scenes[position]);
+/**
+ * General plan edit (no specialist matched). runRefine decides what changes, renames in code and rewrites only the
+ * scenes that need it, using the scenes the message names as a hint. No change means no proposal: plan is null.
+ */
+async function refineFallback(input: DirectorRequest, deps: DirectorDeps): Promise<DirectorResponse> {
+  const { plan, messages, message, decisions, source } = input;
+  const result = await deps.refine({
+    plan,
+    messages,
+    message,
+    ...(decisions ? { decisions } : {}),
+    ...(source ? { source } : {}),
   });
-  appendNewByName(plan.characters, scoped.characters);
-  appendNewByName(plan.locations, scoped.locations);
-  return plan;
-}
-
-function refineResponse(
-  result: { reply: string; changeSummary: string[] },
-  plan: ShotPlan,
-  usage: UsageRecord[],
-): DirectorResponse {
   return {
     mode: "refine",
     reply: result.reply,
@@ -343,41 +299,15 @@ function refineResponse(
     failed: [],
     recommendations: [],
     conflicts: [],
-    changeSummary: result.changeSummary,
-    plan,
-    usage,
+    changeSummary: result.changed ? result.changeSummary : [],
+    plan: result.changed ? result.plan : null,
+    usage: result.usage,
   };
 }
 
 /**
- * General plan edit. A request naming specific scenes sends only those scenes (plus film-level context) and splices
- * the result back, so untargeted scenes stay byte-identical. One call; a second full refine only if the scoped
- * result's scene count doesn't match.
- */
-async function refineFallback(input: DirectorRequest, deps: DirectorDeps): Promise<DirectorResponse> {
-  const { plan, messages, message, decisions } = input;
-  const history = decisions ? { decisions } : {};
-  const usage: UsageRecord[] = [];
-  const targets = isSceneStructureEdit(message) ? [] : findTargetScenes(message, plan.scenes.length);
-  if (targets.length && targets.length < plan.scenes.length) {
-    const scoped = await deps.refine({
-      plan: { ...plan, scenes: targets.map((index) => plan.scenes[index]) },
-      messages,
-      message: scopedMessage(message, targets),
-      ...history,
-    });
-    usage.push(scoped.usage);
-    const spliced = spliceScenes(plan, targets, scoped.plan);
-    if (spliced) return refineResponse(scoped, spliced, usage);
-  }
-  const refined = await deps.refine({ plan, messages, message, ...history });
-  usage.push(refined.usage);
-  return refineResponse(refined, refined.plan, usage);
-}
-
-/**
  * Multi-agent Creative Director. Bounded: at most 5 specialist calls in parallel plus 1 synthesis call,
- * or 1 refine call (2 only when a scene-scoped refine can't be spliced back), no recursion. Specialists only propose; the merged plan is a copy awaiting the filmmaker's Apply.
+ * or one plan edit (1 decision call plus at most MAX_PLAN_SCENES scene calls in parallel), no recursion. Specialists only propose; the merged plan is a copy awaiting the filmmaker's Apply.
  */
 export async function runDirector(
   input: DirectorRequest,
@@ -402,6 +332,7 @@ export async function runDirector(
     }
     failed.push(selected[index]);
     causes.push(outcome.reason);
+    options.onSpecialistFailure?.(describeSpecialistFailure(selected[index], outcome.reason));
     if (outcome.reason instanceof ModelOutputError) usage.push(outcome.reason.usage);
   });
   if (!results.length) throw new DirectorError(failed, causes);

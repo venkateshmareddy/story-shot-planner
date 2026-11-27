@@ -1,6 +1,6 @@
 import type { ShotPlan } from "@/lib/story-planning";
 import { type EditField, PLAN_LEVEL_FIELDS, SCENE_LEVEL_FIELDS, type SpecialistEdit } from "./schemas";
-import { clip, shotId } from "./shared";
+import { clip, MAX_SPECIALIST_EDITS, shotId } from "./shared";
 import { SPECIALIST_LABELS, type SpecialistId } from "./types";
 
 /** Fixed tie-break when two specialists propose the same scene/shot/field: story intent first, then factual continuity, then craft. */
@@ -73,7 +73,7 @@ function normalizeValue(field: EditField, raw: string, plan: ShotPlan): EditValu
   return raw;
 }
 
-/** Keeps only edits this specialist owns, that point at an existing scene/shot and change a valid value. */
+/** Keeps only edits this specialist owns, that point at an existing scene/shot and change a valid value; the first MAX_SPECIALIST_EDITS distinct ones. */
 export function sanitizeEdits(
   plan: ShotPlan,
   specialist: SpecialistId,
@@ -81,7 +81,9 @@ export function sanitizeEdits(
   edits: readonly SpecialistEdit[],
 ): ValidEdit[] {
   const valid: ValidEdit[] = [];
+  const seen = new Set<string>();
   for (const edit of edits) {
+    if (valid.length >= MAX_SPECIALIST_EDITS) break;
     if (!isEditField(edit.field, allowed)) continue;
     const field = edit.field;
     const raw = typeof edit.value === "string" ? edit.value.trim() : "";
@@ -111,8 +113,10 @@ export function sanitizeEdits(
     }
 
     const value = normalizeValue(field, raw, plan);
-    if (value === null || sameValue(value, previous)) continue;
-    valid.push({ specialist, field, scene, shot, value, previous, target, key: `${field}:${scene}:${shot ?? "-"}` });
+    const key = `${field}:${scene}:${shot ?? "-"}`;
+    if (value === null || sameValue(value, previous) || seen.has(key)) continue;
+    seen.add(key);
+    valid.push({ specialist, field, scene, shot, value, previous, target, key });
   }
   return valid;
 }
