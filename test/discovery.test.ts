@@ -123,9 +123,20 @@ test("model-facing interview text is clipped before the next request", () => {
     [],
     EMPTY_CONTEXT,
   );
-  assert.equal(resolved.note.length, 1_000);
+  assert.equal(resolved.note.length, 200);
   assert.equal(resolved.status === "ask" && resolved.question.length, 500);
-  assert.equal(resolved.status === "ask" && resolved.rationale.length, 500);
+  assert.equal(resolved.status === "ask" && resolved.rationale.length, 200);
+});
+
+test("long note and rationale are clipped at a word boundary with an ellipsis", () => {
+  const resolved = resolveInterviewTurn(
+    turn({ note: "word ".repeat(80), rationale: "because ".repeat(60) }),
+    [],
+    EMPTY_CONTEXT,
+  );
+  assert.equal(resolved.status, "ask");
+  assert.ok(resolved.note.length <= 200 && resolved.note.endsWith("word…"));
+  assert.ok(resolved.status === "ask" && resolved.rationale.length <= 200 && resolved.rationale.endsWith("because…"));
 });
 
 test("stop request detection", () => {
@@ -216,6 +227,17 @@ test("interview prompt carries the framework priorities and plain language", () 
   assert.ok(prompt.includes(SKIPPED_ANSWER));
   assert.ok(prompt.includes(DECIDE_ANSWER));
   assert.ok(prompt.toLowerCase().includes("exactly one"));
+});
+
+test("interview prompt builds on the latest answer without demanding a rationale every turn", () => {
+  const prompt = composeInstructions("interview", "short_film");
+  assert.ok(prompt.includes("Build the next question on the filmmaker's latest answer"));
+  assert.ok(prompt.includes("never re-ask an earlier question in different words"));
+  assert.ok(prompt.includes("ask only the most important one now"));
+  assert.ok(prompt.includes("offer 2–3 concrete options"));
+  assert.ok(prompt.includes("Never ask for anything already known, answered or reasonably inferable"));
+  assert.ok(!prompt.includes("a rationale saying why it helps the film"));
+  assert.ok(!prompt.includes("Put your short read of the latest answer in note"));
 });
 
 test("plan prompt binds user/approved facts and lists assumptions", () => {

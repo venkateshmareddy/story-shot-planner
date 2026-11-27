@@ -5,7 +5,9 @@ import {
   type InterviewExchange,
   type InterviewTurnOutput,
   interviewTurnOutput,
+  isNearDuplicate,
   resolveInterviewTurn,
+  tidyQuestion,
 } from "../src/lib/interview.ts";
 import { composeInstructions } from "../src/lib/server/prompts.ts";
 import { EMPTY_CONTEXT } from "../src/lib/story-context.ts";
@@ -125,4 +127,65 @@ test("short_film compatibility: instructions include turn-based base and short-f
   );
   assert.ok(instructions.toLowerCase().includes("exactly one"));
   assert.ok(instructions.includes("Focus on the few decisions that most shape a short film."));
+});
+
+test("tidyQuestion keeps only the first question of a numbered list", () => {
+  assert.equal(
+    tidyQuestion("1. Who is the main character?\n2. What do they want?\n3. Where is it set?"),
+    "Who is the main character?",
+  );
+  assert.equal(
+    tidyQuestion("1) Who is the main character? 2) What do they want? 3) Where is it set?"),
+    "Who is the main character?",
+  );
+  assert.equal(tidyQuestion("- Who is the main character?\n- What do they want?"), "Who is the main character?");
+});
+
+test("tidyQuestion cuts three questions to the main question plus one follow-up", () => {
+  assert.equal(
+    tidyQuestion("What does Mara want most? Is it money, freedom or her brother's respect? And where does she live?"),
+    "What does Mara want most? Is it money, freedom or her brother's respect?",
+  );
+});
+
+test("tidyQuestion leaves a single question unchanged apart from whitespace", () => {
+  const single = "Why does the driver keep the child on the night bus instead of calling the police?";
+  assert.equal(tidyQuestion(single), single);
+  assert.equal(tidyQuestion(`  ${single.replace(" the child", "\n  the   child")}  `), single);
+  assert.equal(tidyQuestion("Tell me about the ending."), "Tell me about the ending.");
+  assert.equal(tidyQuestion("Who is the hero? Take your time."), "Who is the hero?");
+  assert.equal(tidyQuestion(""), "");
+});
+
+test("isNearDuplicate catches a reworded question and ignores a different topic", () => {
+  const asked = ["What does the main character want most?"];
+  assert.equal(isNearDuplicate("What does your main character really want the most in this story?", asked), true);
+  assert.equal(isNearDuplicate("what does the MAIN character want most?", asked), true);
+  assert.equal(isNearDuplicate("Where does the story take place?", asked), false);
+  assert.equal(isNearDuplicate("Where is it set?", ["When is it set?"]), false);
+  assert.equal(isNearDuplicate("What does the main character want most?", []), false);
+});
+
+test("resolveInterviewTurn returns exactly one question when the model sends a questionnaire", () => {
+  const resolved = resolveInterviewTurn(
+    askMock({ question: "1. Who is the hero?\n2. What does she want?\n3. Where does it end?" }),
+    [],
+    EMPTY_CONTEXT,
+  );
+  assert.equal(resolved.status, "ask");
+  assert.equal(resolved.status === "ask" && resolved.question, "Who is the hero?");
+  assert.equal(resolved.status === "ask" && resolved.question.split("?").length - 1, 1);
+});
+
+test("resolveInterviewTurn completes on a near-duplicate question with the default recommendation", () => {
+  const answered: InterviewExchange[] = [
+    { question: "What visual motif should carry the bittersweet tone?", answer: "Rain on glass." },
+  ];
+  const resolved = resolveInterviewTurn(
+    askMock({ question: "Which visual motif should really carry that bittersweet tone in your film?" }),
+    answered,
+    EMPTY_CONTEXT,
+  );
+  assert.equal(resolved.status, "complete");
+  assert.equal(resolved.status === "complete" && resolved.recommendation, DEFAULT_RECOMMENDATION);
 });

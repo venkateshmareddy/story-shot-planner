@@ -1,6 +1,7 @@
 import type { z } from "zod";
 import type { RefineResult } from "@/lib/server/refine";
-import { PLAIN_LANGUAGE, SOURCE_RULES } from "@/lib/server/prompts";
+import { ANALYSIS_STYLE, DIRECTOR_PERSONA, PLAIN_LANGUAGE, SOURCE_RULES } from "@/lib/server/prompts";
+import { categoryOf, PRIORITY_ORDER } from "@/lib/story-context";
 import type { RefineRequest, ShotPlan } from "@/lib/story-planning";
 import type { UsageRecord, UsageStep } from "@/lib/usage";
 import { cinematographyDirector } from "./cinematography-director";
@@ -10,7 +11,14 @@ import { mergeEdits, sanitizeEdits, type ValidEdit } from "./merge";
 import { domainScore, selectSpecialists } from "./router";
 import { findTargetScenes, isSceneStructureEdit } from "./scope";
 import { anySpecialistOutput, type SpecialistOutput, synthesisOutput } from "./schemas";
-import { clip, type SpecialistDefinition } from "./shared";
+import {
+  clip,
+  factStatus,
+  MAX_SPECIALIST_RECOMMENDATIONS,
+  recentDecisions,
+  type SpecialistDefinition,
+  specialistContext,
+} from "./shared";
 import { soundDirector } from "./sound-director";
 import { storyAnalyst } from "./story-analyst";
 import {
@@ -77,16 +85,21 @@ export class DirectorError extends Error {
 
 const SPECIALIST_TIMEOUT_MS = 60_000;
 const SYNTHESIS_TIMEOUT_MS = 30_000;
-const SYNTHESIS_MAX_OUTPUT_TOKENS = 700;
-const MAX_RECOMMENDATIONS_PER_SPECIALIST = 4;
+const SYNTHESIS_MAX_OUTPUT_TOKENS = 1_200;
+// Total findings handed to synthesis stays at the old 5 x 3; fewer specialists get deeper coverage each.
+const SYNTHESIS_RECOMMENDATION_BUDGET = 15;
+const SYNTHESIS_MAX_ESTABLISHED = 8;
+const FALLBACK_POINTS_PER_SPECIALIST = 2;
 const MAX_CONFLICTS = 8;
 const PRIORITY_RANK = { high: 0, medium: 1, low: 2 } as const;
 
 const SYNTHESIS_INSTRUCTIONS = [
   SOURCE_RULES,
+  DIRECTOR_PERSONA,
   PLAIN_LANGUAGE,
-  "You are the Creative Director leading a film's specialist team. The input holds the filmmaker's message, each specialist's findings (specialists), specialists that could not respond (failed), deterministic edit conflicts (mergeConflicts) and the plan changes proposed for the filmmaker's approval (proposedChanges).",
-  "reply: one coherent Creative Director voice addressed to the filmmaker, 80-180 words. Answer the message, lead with the most important recommendations, credit each discipline briefly, explain why the advice matters for the film, and say that proposed changes wait for their approval. Do not add recommendations that are not in the input.",
+  ANALYSIS_STYLE,
+  "Your specialist team has studied the plan for this request; now you answer the filmmaker yourself. The input holds the filmmaker's message, what the filmmaker has established (established, may be empty), each specialist's findings by discipline (specialists), disciplines that could not respond (failed), deterministic edit conflicts (mergeConflicts) and the plan changes proposed for the filmmaker's approval (proposedChanges).",
+  'reply: ONE coherent Creative Director voice speaking to the filmmaker, never a relay of separate reports ("the Camera expert says"). Answer the message first, in the opening sentence or two. Match the length to the request: about 60-150 words for a focused question, up to about 350 words for a review across several areas. When two or more areas matter, give each a label line such as "Story:", "Camera:", "Sound:", "Editing:" or "Consistency:" followed by "- " bullets, the most important point first and tied to scene or shot ids. Say each point once, even when several specialists raise it. Where specialists disagree or a choice trades one quality for another, explain the trade-off and name the alternative. Keep three things visibly distinct: what the filmmaker established, what is assumed (say so), and what you recommend. Use only findings present in the input; add no new recommendations. If proposedChanges is not empty, end by saying those changes wait for their approval; if failed is not empty, say in one short clause which area could not respond.',
   "conflicts: one sentence per genuine disagreement or trade-off between specialists, including every mergeConflicts entry, naming the alternative the filmmaker could choose; [] when there is none.",
 ].join("\n");
 
@@ -133,6 +146,30 @@ function approvedContext(input: DirectorRequest, id: SpecialistId) {
   return { answers };
 }
 
+/** Structured StoryContext when the client sent one; the flat interview/collected list for older sessions. */
+function projectContext(input: DirectorRequest, definition: SpecialistDefinition) {
+  const { context } = input;
+  if (context && (context.facts.length || context.unresolved.length)) {
+    return { context: specialistContext(context, definition.id, definition.contextCategories) };
+  }
+  return { approved: approvedContext(input, definition.id) };
+}
+
+/** Filmmaker and approved facts across all categories, most important category first. */
+function establishedFacts(input: DirectorRequest) {
+  if (!input.context) return [];
+  return input.context.facts
+    .map((fact, index) => ({ fact, index }))
+    .filter(({ fact }) => factStatus(fact) !== "ai_suggestion")
+    .sort(
+      (a, b) =>
+        PRIORITY_ORDER[categoryOf(a.fact.category).priority] - PRIORITY_ORDER[categoryOf(b.fact.category).priority] ||
+        a.index - b.index,
+    )
+    .slice(0, SYNTHESIS_MAX_ESTABLISHED)
+    .map(({ fact }) => `${categoryOf(fact.category).label}, ${clip(fact.label, 60)}: ${clip(fact.value, 160)}`);
+}
+
 async function consult(
   definition: SpecialistDefinition,
   input: DirectorRequest,
@@ -143,7 +180,8 @@ async function consult(
   const payload = {
     message: input.message,
     recent: input.messages.slice(-4).map(({ role, text }) => ({ role, text: clip(text, 300) })),
-    approved: approvedContext(input, definition.id),
+    ...projectContext(input, definition),
+    decisions: recentDecisions(input.decisions),
     plan: definition.buildContext(input.plan, input.references),
   };
   const { output, usage } = await untilAborted(
@@ -169,7 +207,7 @@ function toRecommendations(results: SpecialistResult[]): Recommendation[] {
     .flatMap(({ id, output }) =>
       output.recommendations
         .filter(({ recommendation }) => recommendation.trim())
-        .slice(0, MAX_RECOMMENDATIONS_PER_SPECIALIST)
+        .slice(0, MAX_SPECIALIST_RECOMMENDATIONS)
         .map((item) => ({
           specialist: id,
           target: clip(item.target, 80) || "Overall",
@@ -182,9 +220,26 @@ function toRecommendations(results: SpecialistResult[]): Recommendation[] {
     .sort((a, b) => PRIORITY_RANK[a.priority] - PRIORITY_RANK[b.priority]);
 }
 
+function fallbackPoint(target: string, recommendation: string) {
+  const where = clip(target, 80);
+  return `- ${where && where !== "Overall" ? `${where}: ` : ""}${clip(recommendation, 300)}`;
+}
+
+/** Deterministic reply when synthesis is skipped or fails: one label line per discipline, summary, top points. */
 function fallbackReply(results: SpecialistResult[]) {
   if (results.length === 1) return results[0].output.summary.trim();
-  return results.map(({ id, output }) => `${SPECIALIST_LABELS[id]}: ${output.summary.trim()}`).join("\n\n");
+  return results
+    .map(({ id, output }) =>
+      [
+        `${SPECIALIST_LABELS[id]}:`,
+        output.summary.trim(),
+        ...output.recommendations
+          .filter(({ recommendation }) => recommendation.trim())
+          .slice(0, FALLBACK_POINTS_PER_SPECIALIST)
+          .map(({ target, recommendation }) => fallbackPoint(target, recommendation)),
+      ].join("\n"),
+    )
+    .join("\n\n");
 }
 
 async function synthesize(
@@ -198,17 +253,26 @@ async function synthesize(
   usage: UsageRecord[],
 ): Promise<{ reply: string; conflicts: string[] } | null> {
   const signal = deadline(options.signal, options.synthesisTimeoutMs ?? SYNTHESIS_TIMEOUT_MS);
+  const perSpecialist = Math.min(
+    MAX_SPECIALIST_RECOMMENDATIONS,
+    Math.max(2, Math.floor(SYNTHESIS_RECOMMENDATION_BUDGET / results.length)),
+  );
   const payload = {
     message: clip(input.message, 1_000),
+    established: establishedFacts(input),
     specialists: results.map(({ id, output }) => ({
       discipline: SPECIALIST_LABELS[id],
-      summary: clip(output.summary, 500),
-      recommendations: output.recommendations.slice(0, 3).map(({ target, recommendation, rationale, priority }) => ({
-        target: clip(target, 80),
-        priority,
-        recommendation: clip(recommendation, 240),
-        rationale: clip(rationale, 160),
-      })),
+      summary: clip(output.summary, 800),
+      recommendations: output.recommendations
+        .filter(({ recommendation }) => recommendation.trim())
+        .slice(0, perSpecialist)
+        .map(({ target, issue, recommendation, rationale, priority }) => ({
+          target: clip(target, 80),
+          priority,
+          issue: clip(issue, 200),
+          recommendation: clip(recommendation, 300),
+          rationale: clip(rationale, 200),
+        })),
     })),
     failed: failed.map((id) => SPECIALIST_LABELS[id]),
     mergeConflicts,
@@ -291,7 +355,8 @@ function refineResponse(
  * result's scene count doesn't match.
  */
 async function refineFallback(input: DirectorRequest, deps: DirectorDeps): Promise<DirectorResponse> {
-  const { plan, messages, message } = input;
+  const { plan, messages, message, decisions } = input;
+  const history = decisions ? { decisions } : {};
   const usage: UsageRecord[] = [];
   const targets = isSceneStructureEdit(message) ? [] : findTargetScenes(message, plan.scenes.length);
   if (targets.length && targets.length < plan.scenes.length) {
@@ -299,12 +364,13 @@ async function refineFallback(input: DirectorRequest, deps: DirectorDeps): Promi
       plan: { ...plan, scenes: targets.map((index) => plan.scenes[index]) },
       messages,
       message: scopedMessage(message, targets),
+      ...history,
     });
     usage.push(scoped.usage);
     const spliced = spliceScenes(plan, targets, scoped.plan);
     if (spliced) return refineResponse(scoped, spliced, usage);
   }
-  const refined = await deps.refine({ plan, messages, message });
+  const refined = await deps.refine({ plan, messages, message, ...history });
   usage.push(refined.usage);
   return refineResponse(refined, refined.plan, usage);
 }

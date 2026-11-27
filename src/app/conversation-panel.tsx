@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import { VoiceRecorder } from "./voice-recorder";
 import { type ImageReference, type Recommendation, SPECIALIST_LABELS, type SpecialistId } from "@/lib/agents/types";
+import { formatReply } from "@/lib/format-reply";
 import { DISCOVERY_ACTIONS, QUICK_ACTIONS } from "@/lib/quick-actions";
 import { MAX_ANSWER_CHARACTERS, MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
 import type { ChatMessage, StorySession } from "@/lib/session";
@@ -69,6 +70,34 @@ function TeamNotes({ message }: { message: ChatMessage }) {
           Couldn’t reach {failed.map(specialistLabel).join(", ")} this time, so their advice is missing.
         </p>
       )}
+    </div>
+  );
+}
+
+function ReplyText({ text }: { text: string }) {
+  const blocks = useMemo(() => formatReply(text), [text]);
+  if (blocks.length === 0) return null;
+  return (
+    <div className="chat-reply">
+      {blocks.map((block, index) => {
+        if (block.type === "list") {
+          return (
+            // biome-ignore lint/suspicious/noArrayIndexKey: Blocks are derived from fixed reply text.
+            <ul className="chat-reply-list" key={index}>
+              {block.items.map((item, itemIndex) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: List items are fixed per reply and may repeat.
+                <li key={itemIndex}>{item}</li>
+              ))}
+            </ul>
+          );
+        }
+        return (
+          // biome-ignore lint/suspicious/noArrayIndexKey: Blocks are derived from fixed reply text.
+          <p className={block.type === "label" ? "chat-label" : undefined} key={index}>
+            {block.text}
+          </p>
+        );
+      })}
     </div>
   );
 }
@@ -329,7 +358,7 @@ export function ConversationPanel({
                 {message.specialists && message.specialists.length > 0 && (
                   <p className="chat-consulted">Advice from: {message.specialists.map(specialistLabel).join(" · ")}</p>
                 )}
-                <p className="chat-reply">{message.text}</p>
+                <ReplyText text={message.text} />
                 {message.suggestion && <p className="muted chat-suggestion">{message.suggestion}</p>}
                 {message.reference && <ReferenceNotes reference={message.reference} />}
                 <TeamNotes message={message} />

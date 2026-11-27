@@ -6,6 +6,7 @@ import { ConversationPanel } from "./conversation-panel";
 import { SettingsScreen, type SettingsSection } from "./settings-screen";
 import { Sidebar } from "./sidebar";
 import { StoryEditor } from "./story-editor";
+import { buildDecisionHistory } from "@/lib/decisions";
 import type { ResolvedInterviewTurn } from "@/lib/interview";
 import { answerFor } from "@/lib/quick-actions";
 import { MAX_SESSION_TITLE, newId, planSignature, type ChatMessage, type StorySession } from "@/lib/session";
@@ -108,7 +109,7 @@ export function StudioApp() {
           const question: ChatMessage = {
             id: newId(),
             role: "agent",
-            text: [turn.note, turn.question].filter(Boolean).join("\n\n") || turn.question,
+            text: [turn.note.trim(), turn.question].filter(Boolean).join("\n\n") || turn.question,
             suggestion: turn.rationale || undefined,
           };
           return {
@@ -122,7 +123,7 @@ export function StudioApp() {
         const message: ChatMessage = {
           id: newId(),
           role: "agent",
-          text: turn.note || "I think we have enough to plan the shots.",
+          text: turn.note.trim() || "I think we have enough to plan the shots.",
           suggestion: turn.recommendation || undefined,
         };
         return {
@@ -235,6 +236,8 @@ export function StudioApp() {
       answers: session.answered,
       collected: directorCollected(session.context, session.collected),
       references: session.references?.length ? session.references : undefined,
+      context: session.context,
+      decisions: buildDecisionHistory(session.messages),
     });
     finishRequest(requestId);
     if (!result.ok) {

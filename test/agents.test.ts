@@ -153,7 +153,7 @@ for (const { def, has, lacks } of contextCases) {
     for (const key of has) assert.ok(keys.has(key), `${def.id} missing ${key}`);
     for (const key of lacks) assert.ok(!keys.has(key), `${def.id} leaks ${key}`);
     assert.ok(JSON.stringify(context).includes("S01_SH02"));
-    assert.ok(def.maxOutputTokens <= 1_500);
+    assert.ok(def.maxOutputTokens <= 1_800);
   });
 
   test(`${def.id} schema accepts valid and rejects invalid output`, () => {
@@ -243,7 +243,7 @@ test("synthesis runs once when two specialists succeed", async () => {
   const result = await runDirector(request("Better lighting and a softer score"), fake.deps);
   assert.equal(result.reply, "One voice.");
   assert.deepEqual(result.conflicts, ["Camera wants silence; sound wants rain."]);
-  assert.equal(fake.calls.at(-1)?.maxOutputTokens, 700);
+  assert.equal(fake.calls.at(-1)?.maxOutputTokens, 1_200);
 });
 
 test("synthesis failure falls back to a deterministic reply", async () => {
@@ -255,7 +255,7 @@ test("synthesis failure falls back to a deterministic reply", async () => {
     },
   });
   const result = await runDirector(request("Better lighting and a softer score"), fake.deps);
-  assert.equal(result.reply, "Camera: Camera\n\nSound: Sound");
+  assert.equal(result.reply, "Camera:\nCamera\n- S01_SH01: Camera rec\n\nSound:\nSound\n- S01_SH01: Sound rec");
   assert.equal(result.usage.length, 2);
 });
 

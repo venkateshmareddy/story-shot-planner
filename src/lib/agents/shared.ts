@@ -1,8 +1,10 @@
 import type { z } from "zod";
-import { PLAIN_LANGUAGE, SOURCE_RULES } from "@/lib/server/prompts";
+import { ANALYSIS_STYLE, DIRECTOR_PERSONA, PLAIN_LANGUAGE, SOURCE_RULES } from "@/lib/server/prompts";
+import type { ContextFact, StoryCategoryId, StoryContext } from "@/lib/story-context";
 import type { ShotPlan } from "@/lib/story-planning";
+import { domainScore } from "./router";
 import type { EditField } from "./schemas";
-import type { ImageReference, SpecialistId } from "./types";
+import { type DecisionRecord, type ImageReference, SPECIALIST_IDS, SPECIALIST_LABELS, type SpecialistId } from "./types";
 
 export type SpecialistDefinition = {
   id: SpecialistId;
@@ -10,12 +12,19 @@ export type SpecialistDefinition = {
   instructions: string;
   /** Plan fields this specialist may propose edits for. */
   fields: readonly EditField[];
+  /** StoryContext categories this specialist receives, most relevant first. */
+  contextCategories: readonly StoryCategoryId[];
   /** Structured-output schema sent to the model. */
   schema: z.ZodType;
   maxOutputTokens: number;
   /** Only the plan slice this specialist needs. */
   buildContext: (plan: ShotPlan, references?: readonly ImageReference[]) => unknown;
 };
+
+export const MAX_SPECIALIST_RECOMMENDATIONS = 5;
+export const MAX_SPECIALIST_FACTS = 16;
+export const MAX_SPECIALIST_OPEN_QUESTIONS = 4;
+export const MAX_SPECIALIST_DECISIONS = 6;
 
 export function shotId(sceneIndex: number, shotIndex: number) {
   const pad = (value: number) => String(value + 1).padStart(2, "0");
@@ -27,14 +36,100 @@ export function clip(text: string, max = 400) {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-export function specialistInstructions(role: string, expertise: string, fieldRules: string) {
+export type FactStatus = "filmmaker" | "approved" | "ai_suggestion";
+
+export type SpecialistFact = { category: StoryCategoryId; label: string; value: string; status: FactStatus };
+
+export type SpecialistStoryContext = { facts: SpecialistFact[]; openQuestions: string[] };
+
+export function factStatus(fact: Pick<ContextFact, "source" | "approved">): FactStatus {
+  if (fact.source === "user") return "filmmaker";
+  return fact.approved ? "approved" : "ai_suggestion";
+}
+
+/** The facts and open questions relevant to one discipline: constraints first, then by category relevance. */
+export function specialistContext(
+  context: StoryContext,
+  id: SpecialistId,
+  categories: readonly StoryCategoryId[],
+): SpecialistStoryContext {
+  const relevance = new Map(categories.map((category, index) => [category, index]));
+  const facts = context.facts
+    .filter((fact) => relevance.has(fact.category))
+    .map((fact, index) => ({ fact, index, status: factStatus(fact), rank: relevance.get(fact.category) ?? 0 }))
+    .sort(
+      (a, b) =>
+        Number(a.status === "ai_suggestion") - Number(b.status === "ai_suggestion") ||
+        a.rank - b.rank ||
+        a.index - b.index,
+    )
+    .slice(0, MAX_SPECIALIST_FACTS)
+    .map(({ fact, status }) => ({
+      category: fact.category,
+      label: clip(fact.label, 80),
+      value: clip(fact.value, 300),
+      status,
+    }));
+  const openQuestions = context.unresolved
+    .map((question, index) => ({ question, index, score: domainScore(question, id) }))
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, MAX_SPECIALIST_OPEN_QUESTIONS)
+    .map(({ question }) => clip(question, 200));
+  return { facts, openQuestions };
+}
+
+/** The filmmaker's latest decisions on earlier proposals, newest last. */
+export function recentDecisions(decisions: readonly DecisionRecord[] | undefined) {
+  return (decisions ?? []).slice(-MAX_SPECIALIST_DECISIONS).map(({ status, request, changes }) => ({
+    status,
+    request: clip(request, 240),
+    changes: changes.slice(0, 5).map((change) => clip(change, 160)),
+  }));
+}
+
+const DISCIPLINE_SCOPE: Record<SpecialistId, string> = {
+  "story-analyst": "story purpose, motivation, conflict, structure and what the dialogue says",
+  "cinematography-director": "framing, camera angle and movement, lens, lighting and colour",
+  "sound-director": "dialogue clarity, ambience, effects, music and silence",
+  "editing-director": "shot length, pacing, cuts, transitions and scene order",
+  "continuity-reviewer": "names, appearance, props, places and timeline consistency",
+};
+
+export type SpecialistDiscipline = {
+  id: SpecialistId;
+  /** Craft points to weigh where relevant. */
+  checklist: string;
+};
+
+export function specialistInstructions(
+  role: string,
+  expertise: string,
+  fieldRules: string,
+  discipline?: SpecialistDiscipline,
+) {
+  const others = discipline
+    ? SPECIALIST_IDS.filter((other) => other !== discipline.id)
+        .map((other) => `${SPECIALIST_LABELS[other]} (${DISCIPLINE_SCOPE[other]})`)
+        .join("; ")
+    : "";
   return [
     SOURCE_RULES,
-    `You are the ${role} on a film's creative team. ${expertise}`,
+    DIRECTOR_PERSONA,
+    `In this call you work as the team's ${role}, bringing the Creative Director's judgement to one discipline. ${expertise}`,
     PLAIN_LANGUAGE,
-    "Input: the filmmaker's message, recent conversation (recent), approved project decisions (approved) and the plan excerpt for your discipline (plan). Respond to the message within your discipline only. Honour approved decisions unless the filmmaker overrides them.",
-    'summary: 1-3 sentences answering the filmmaker directly. recommendations: at most 4, most important first. target is a shot id like S01_SH02, "Scene 2", "Character: Name" or "Overall"; issue names what weakens the film; recommendation is specific and actionable; rationale explains its purpose for the audience or the production; priority is high, medium or low.',
-    `edits: concrete replacement values, only when the filmmaker asks for a change or a clear fix exists in your discipline; otherwise []. scene and shot are 1-based and match the ids (S02_SH03 is scene 2, shot 3). ${fieldRules} value is the complete new text for that field. You recommend and propose; the filmmaker approves every edit.`,
-    "Be concise, specific and production-minded. Never invent story events, characters or dialogue.",
-  ].join("\n");
+    ANALYSIS_STYLE,
+    discipline
+      ? `Checklist (consider where relevant, never all at once; pick what this request and this plan actually need): ${discipline.checklist}.`
+      : "",
+    discipline
+      ? `Stay strictly in your discipline. The other experts cover ${others}. Leave those points to them so the team never repeats itself.`
+      : "Stay strictly in your discipline.",
+    "Input: the filmmaker's message; recent conversation (recent); the project context relevant to you (context: facts with category, label, value and status, plus openQuestions still unresolved), or for older projects a flat list of approved details (approved); the filmmaker's decisions on earlier proposals, newest last (decisions); and the plan excerpt for your discipline (plan).",
+    "Facts with status filmmaker or approved, and approved details, are constraints: build on them and never contradict them; if one hurts the film, say why and offer an alternative for the filmmaker to decide. Facts with status ai_suggestion are earlier AI guesses you may challenge or replace. Treat openQuestions as unknowns and mark anything you assume about them as an assumption. Build on accepted decisions. Never re-propose a change from a rejected decision unless the filmmaker's message asks for it again.",
+    `summary: answer the filmmaker's message directly in 2-5 sentences with your main judgement and why; give a fuller assessment when they ask for a review. recommendations: up to ${MAX_SPECIALIST_RECOMMENDATIONS}, most important first, only points that matter. target is a shot id like S01_SH02, "Scene 2", "Character: Name" or "Overall"; issue names the specific problem in this plan; recommendation is the specific, actionable change (what, where and how); rationale explains why it matters for the audience or the shoot; priority is high (clearly hurts the film or the shoot), medium or low.`,
+    `edits: concrete replacement values, only when the filmmaker asks for a change or a clear fix exists in your discipline; otherwise []. scene and shot are 1-based and match the ids (S02_SH03 is scene 2, shot 3). ${fieldRules} value is the complete new text for that field. Edit only your own fields. You recommend and propose; the filmmaker approves every edit.`,
+    "Never invent story events, characters or dialogue.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }

@@ -97,3 +97,11 @@ Key valid as of 2026-11-27. Both model IDs verified. Secrets are read only on th
 ## Next recommended task
 
 Decide the plan-input question (send collected details; allow original dialogue when there is no source story) and implement editing of earlier answers. Then push the branch and add `npm test` to CI.
+
+## Update — Creative Director personality and analysis depth (2026-11-27)
+
+- One runtime identity (`DIRECTOR_PERSONA`) shared by every stage, specialist and the synthesis; `DISCOVERY_STYLE` for questions, `ANALYSIS_STYLE` for reviews (D-025).
+- Discovery: one short, story-specific question per turn; reworded repeats end discovery; multi-part questions trimmed (D-026).
+- Specialists get structured, category-filtered StoryContext and the filmmaker's last decisions; rejected changes aren't re-proposed; combined reply adapts its length and renders as labels and bullets (D-027).
+- Validation: lint clean (56 files), typecheck clean, 158/158 tests, build OK. Verification is unit-level with mocked model output; live AI behaviour and the browser journey are not re-verified after this change.
+- Known input gaps: audio files can't be uploaded (mic recording only); imported TXT/PDF text is cut to 2,000 characters in discovery (4,000 after planning).

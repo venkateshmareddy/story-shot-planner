@@ -26,7 +26,7 @@ import {
   toCollected,
 } from "@/lib/story-context";
 import { contextFactSchema } from "@/lib/story-context-schema";
-import type { ShotPlan } from "@/lib/story-planning";
+import { MAX_DECISIONS, type ShotPlan } from "@/lib/story-planning";
 import { isUsageRecord, type UsageRecord } from "@/lib/usage";
 
 export type AgentResult<T> = ({ ok: true } & T) | { ok: false; error: string };
@@ -161,6 +161,8 @@ export async function askDirector(request: DirectorRequest): Promise<AgentResult
     answers: request.answers?.map((item) => ({ question: item.question, answer: item.answer.slice(0, MAX_ANSWER_CHARACTERS) })),
     collected: request.collected?.slice(0, MAX_COLLECTED_ITEMS),
     references: request.references?.length ? request.references.slice(-MAX_REFERENCES) : undefined,
+    context: request.context,
+    decisions: request.decisions?.slice(-MAX_DECISIONS),
   };
   const result = await postJson("/api/story/director", body);
   if (!result.ok) return result;

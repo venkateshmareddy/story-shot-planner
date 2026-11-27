@@ -1,4 +1,5 @@
 import type { CollectedItem } from "@/lib/interview";
+import type { StoryContext } from "@/lib/story-context";
 import type { ShotPlan } from "@/lib/story-planning";
 import type { UsageRecord } from "@/lib/usage";
 
@@ -58,6 +59,17 @@ export type DirectorRequest = {
   collected?: CollectedItem[];
   /** Analysed reference images (text only). The cinematography specialist uses these. */
   references?: ImageReference[];
+  /** Structured 20-category StoryContext (facts with source/approval, open questions). */
+  context?: StoryContext;
+  /** Earlier proposals the filmmaker applied or discarded, newest last. Rejected ideas must not be re-proposed unless asked. */
+  decisions?: DecisionRecord[];
+};
+
+/** One resolved proposal: what was asked, what changed, and whether the filmmaker applied or discarded it. */
+export type DecisionRecord = {
+  status: "accepted" | "rejected";
+  request: string;
+  changes: string[];
 };
 
 /** POST /api/story/image success response. Body: raw image bytes, header `X-Image-Type` (image/png | image/jpeg | image/webp) and optional `X-Image-Name`. */

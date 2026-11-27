@@ -71,6 +71,15 @@ export const planOutput = z.object({
   reviewNotes: z.array(z.string()),
 });
 
+export const MAX_DECISIONS = 12;
+
+/** A resolved proposal fed back to the AI so rejected ideas are not re-proposed (DecisionRecord in agents/types). */
+export const decisionRecord = z.object({
+  status: z.enum(["accepted", "rejected"]),
+  request: z.string().trim().max(300),
+  changes: z.array(z.string().trim().max(200)).max(8),
+});
+
 export const refineRequest = z.object({
   plan: planOutput,
   messages: z
@@ -83,6 +92,7 @@ export const refineRequest = z.object({
     .max(MAX_CHAT_HISTORY),
   message: z.string().trim().min(1).max(MAX_CHAT_MESSAGE_CHARACTERS),
   format: formatSchema.optional(),
+  decisions: z.array(decisionRecord).max(MAX_DECISIONS).optional(),
 });
 
 export const refineOutput = z.object({

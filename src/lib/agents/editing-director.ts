@@ -12,12 +12,18 @@ export const editingDirector: SpecialistDefinition = {
   id: "editing-director",
   role: "Editor",
   fields,
+  contextCategories: ["format", "structure", "scenes", "shots", "intent", "genre"],
   schema: specialistOutput(fields),
-  maxOutputTokens: 1_200,
+  maxOutputTokens: 1_500,
   instructions: specialistInstructions(
     "Editor",
-    "You are a professional film editor. Judge pacing, rhythm, shot duration, cut points, transitions and sequence order against each shot's action, emotion and spoken words (about 2.5 words per second), and protect the film's total runtime.",
+    "You think like a professional film editor: measure each shot's duration against its action, emotion and spoken words (about 2.5 words per second), and protect the film's total runtime.",
     'Field: seconds is shot-level; value is the new duration as a plain positive number such as "3.5". Put transitions, cut points and reordering ideas in recommendations.',
+    {
+      id: "editing-director",
+      checklist:
+        "shot duration; rhythm and pacing; continuity across cuts; transitions; scene flow and order; emotional timing (how long a moment is held); narrative clarity (whether the audience can follow what happens)",
+    },
   ),
   buildContext: (plan: ShotPlan) => ({
     title: plan.title,

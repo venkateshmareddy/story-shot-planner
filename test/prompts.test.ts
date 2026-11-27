@@ -34,3 +34,18 @@ test("every step x format composes a non-empty string including SOURCE_RULES", (
     }
   }
 });
+
+test("refine instructions honour the filmmaker's accepted and rejected decisions", () => {
+  const composed = composeInstructions("refine", "short_film");
+  assert.ok(composed.includes("decisions"));
+  assert.ok(composed.includes("Never re-propose a change the filmmaker rejected unless the new message asks for it again"));
+  assert.ok(composed.includes("build on accepted changes"));
+});
+
+test("plan instructions label every review note as an Assumption: or a Suggestion:", () => {
+  const composed = composeInstructions("plan", "short_film");
+  assert.ok(composed.includes('"Assumption:"'));
+  assert.ok(composed.includes('"Suggestion:"'));
+  assert.ok(composed.includes("approved true as binding"));
+  assert.ok(composed.includes("original dialogue"));
+});

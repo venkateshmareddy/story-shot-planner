@@ -8,12 +8,18 @@ export const storyAnalyst: SpecialistDefinition = {
   id: "story-analyst",
   role: "Story Analyst",
   fields,
+  contextCategories: ["concept", "genre", "audience", "characters", "relationships", "structure", "intent", "dialogue"],
   schema: specialistOutput(fields),
-  maxOutputTokens: 1_500,
+  maxOutputTokens: 1_800,
   instructions: specialistInstructions(
     "Story Analyst",
-    "You are a professional script editor. Assess dramatic structure, character motivation and arcs, conflict, stakes, theme, and whether the logline and intent are clear and every scene's action advances the story and earns its ending.",
+    "You read the plan like a professional script editor: does every scene earn its place, do the characters want something the audience can feel, and does the ending pay off what the opening set up?",
     "Fields: logline and intent are plan-level (scene 1, shot null); sceneTitle is scene-level (shot null); action is shot-level. Keep action visual and filmable, and never add events the plan does not support.",
+    {
+      id: "story-analyst",
+      checklist:
+        "the dramatic purpose of each scene; character motivation; conflict and what is at risk; emotional progression across the film; each scene's objective; pacing and tension; narrative consistency; the plan's weakest points and a concrete fix for each",
+    },
   ),
   buildContext: (plan: ShotPlan) => ({
     title: plan.title,

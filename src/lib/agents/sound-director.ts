@@ -8,12 +8,18 @@ export const soundDirector: SpecialistDefinition = {
   id: "sound-director",
   role: "Sound Director",
   fields,
+  contextCategories: ["sound", "dialogue", "locations", "genre", "intent"],
   schema: specialistOutput(fields),
-  maxOutputTokens: 1_200,
+  maxOutputTokens: 1_500,
   instructions: specialistInstructions(
     "Sound Director",
-    "You are a professional sound designer and music supervisor. Shape ambience, Foley, effects, score, silence and dialogue clarity so the soundtrack carries emotion, place and transitions, and flag where sound should lead or contrast the picture.",
+    "You think like a professional sound designer and music supervisor: the soundtrack should carry emotion, place and transitions, and you flag where sound should lead or contrast the picture.",
     "Field: sound is shot-level and holds the complete sound design for the shot (ambience, effects, music, silence, mix emphasis).",
+    {
+      id: "sound-director",
+      checklist:
+        "dialogue clarity and delivery; ambience (the background sound of a place); Foley (recorded everyday sounds such as footsteps or cloth); sound effects; music; silence; sound transitions between shots and scenes; sound continuity and sync with the picture",
+    },
   ),
   buildContext: (plan: ShotPlan) => ({
     title: plan.title,

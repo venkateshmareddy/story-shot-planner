@@ -12,3 +12,9 @@ test("every story stage asks the model for plain, everyday English", () => {
 test("specialist instructions include the plain-language rule", () => {
   assert.ok(specialistInstructions("Sound Director", "Sound.", "Edit only sound.").includes(PLAIN_LANGUAGE));
 });
+
+test("plain language sets no length limit, so analysis is never truncated by it", () => {
+  assert.ok(!PLAIN_LANGUAGE.toLowerCase().includes("one short sentence"));
+  assert.ok(!/\b(?:under|at most|no more than|maximum of)\s+\d+\s+(?:words|sentences|characters)\b/i.test(PLAIN_LANGUAGE));
+  assert.ok(!/\b\d+\s+words\b/i.test(PLAIN_LANGUAGE));
+});

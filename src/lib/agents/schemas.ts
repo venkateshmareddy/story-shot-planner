@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { collectedItem, MAX_INTERVIEW_TURNS } from "@/lib/interview";
-import { interviewExchange, refineRequest } from "@/lib/story-planning";
+import { storyContextSchema } from "@/lib/story-context-schema";
+import { decisionRecord, interviewExchange, MAX_DECISIONS, refineRequest } from "@/lib/story-planning";
 import type { ImageReference } from "./types";
 
 export const EDIT_FIELDS = [
@@ -81,4 +82,6 @@ export const directorRequest = refineRequest.pick({ plan: true, messages: true, 
   answers: z.array(interviewExchange).max(MAX_INTERVIEW_TURNS).optional(),
   collected: z.array(collectedItem).max(40).optional(),
   references: z.array(imageReference).max(MAX_IMAGE_REFERENCES).optional(),
+  context: storyContextSchema.optional(),
+  decisions: z.array(decisionRecord).max(MAX_DECISIONS).optional(),
 });

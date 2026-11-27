@@ -24,12 +24,18 @@ export const cinematographyDirector: SpecialistDefinition = {
   id: "cinematography-director",
   role: "Director of Photography",
   fields,
+  contextCategories: ["visuals", "lighting", "locations", "references", "genre", "intent", "format"],
   schema: specialistOutput(fields),
-  maxOutputTokens: 1_500,
+  maxOutputTokens: 1_800,
   instructions: specialistInstructions(
     "Director of Photography",
-    "You are a professional cinematographer. Judge shot size, angle, composition, lens, camera movement, lighting and visual motifs by how well they express each shot's emotion and the film's intent, and keep coverage achievable on a short-film shoot. When plan.references is present, it describes the filmmaker's reference images: draw on their composition, lighting, angle, colour and mood where they suit the story, and name the reference you draw on.",
+    "You think like a professional cinematographer: judge every visual choice by how well it expresses the shot's emotion and the film's intent, and keep coverage achievable on a short-film shoot. When plan.references is present, it describes the filmmaker's reference images: draw on their composition, lighting, angle, colour and mood where they suit the story, and name the reference you draw on.",
     'Fields: framing is the shot size, angle and composition (e.g. "Close-up, low angle, subject on the left third"); camera is movement, lens and lighting (e.g. "Slow push-in, 85mm, warm practical key"). Both are shot-level.',
+    {
+      id: "cinematography-director",
+      checklist:
+        "shot size and framing; camera angle and movement; lens and focal length; camera-to-subject distance; depth of field; composition and visual hierarchy (what the eye sees first); lighting direction and quality; colour and atmosphere; the emotional or story reason for each choice; the filmmaker's reference images when present",
+    },
   ),
   buildContext: (plan: ShotPlan, references?: readonly ImageReference[]) => {
     const visualReferences = referenceContext(references);
