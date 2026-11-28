@@ -75,7 +75,7 @@ export function showOriginalityAction(session: Pick<StorySession, "phase" | "pla
 /** Sits next to the originality chip and opens the Audience Retention Predictor report. */
 export const ENGAGEMENT_ACTION = {
   label: ENGAGEMENT_ENTRY_LABEL,
-  shortLabel: "Attention",
+  shortLabel: "Retention",
   tooltip: "An AI estimate of how well each scene could hold attention — not real audience data.",
 } as const;
 

@@ -137,10 +137,10 @@ test("report buttons show a short label but keep the full name as accessible nam
     REPORT_ACTIONS.map((action) => [action.shortLabel, action.label]),
     [
       ["Originality", "Check story originality"],
-      ["Attention", "Audience Retention Predictor"],
+      ["Retention", "Audience Retention Predictor"],
     ],
   );
-  assert.deepEqual(REPORT_ACTIONS.map(reportName), ["Check story originality", "Attention — Audience Retention Predictor"]);
+  assert.deepEqual(REPORT_ACTIONS.map(reportName), ["Check story originality", "Audience Retention Predictor"]);
   for (const action of REPORT_ACTIONS) {
     const name = reportName(action).toLowerCase();
     assert.ok(name.includes(action.shortLabel.toLowerCase()), "visible label is part of the accessible name");

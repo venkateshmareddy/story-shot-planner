@@ -74,7 +74,7 @@ test("after a plan exists the row shows Full review, Ask an expert, then the two
   const shown = buttons(row);
   assert.deepEqual(
     shown.map((button) => button.text),
-    ["Full review", "Ask an expert", "Originality", "Attention"],
+    ["Full review", "Ask an expert", "Originality", "Retention"],
   );
   const [fullReview, menu, originality, retention] = shown;
   assert.equal(fullReview?.attrs.title, FULL_REVIEW_ACTION.message);
@@ -97,7 +97,7 @@ test("after a plan exists the row shows Full review, Ask an expert, then the two
   }
   assert.deepEqual(
     [originality?.attrs["aria-label"], retention?.attrs["aria-label"]],
-    ["Check story originality", "Attention — Audience Retention Predictor"],
+    ["Check story originality", "Audience Retention Predictor"],
   );
 });
 
@@ -109,7 +109,7 @@ test("Full review and the expert menu are disabled while a request runs; report 
       ["Full review", true],
       ["Ask an expert", true],
       ["Originality", false],
-      ["Attention", false],
+      ["Retention", false],
     ],
   );
 });
