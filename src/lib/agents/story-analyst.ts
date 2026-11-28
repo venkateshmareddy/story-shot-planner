@@ -1,34 +1,26 @@
-import { SOURCE_STORY_RULE } from "@/lib/server/prompts";
 import type { ShotPlan } from "@/lib/story-planning";
 import { specialistOutput } from "./schemas";
 import {
+  expertInstructions,
+  CONTEXT_EMOTION_CHARACTERS,
   clip,
+  planExcerpt,
   SPECIALIST_MAX_OUTPUT_TOKENS,
   type SpecialistDefinition,
-  shotId,
-  specialistInstructions,
+  specialistRole,
 } from "./shared";
 
 const fields = ["logline", "intent", "sceneTitle", "action"] as const;
 
 export const storyAnalyst: SpecialistDefinition = {
   id: "story-analyst",
-  role: "Story Analyst",
+  role: specialistRole("story-analyst"),
   fields,
   contextCategories: ["concept", "genre", "audience", "characters", "relationships", "structure", "intent", "dialogue"],
   schema: specialistOutput(fields),
   maxOutputTokens: SPECIALIST_MAX_OUTPUT_TOKENS,
   readsSource: true,
-  instructions: specialistInstructions(
-    "Story Analyst",
-    `You read the plan like a professional script editor: does every scene earn its place, do the characters want something the audience can feel, and does the ending pay off what the opening set up? ${SOURCE_STORY_RULE}`,
-    "Fields: logline and intent are plan-level (scene 1, shot null); sceneTitle is scene-level (shot null); action is shot-level. Keep action visual and filmable, and never add events the plan does not support.",
-    {
-      id: "story-analyst",
-      checklist:
-        "the dramatic purpose of each scene; character motivation; conflict and what is at risk; emotional progression across the film; each scene's objective; pacing and tension; narrative consistency; the plan's weakest points and a concrete fix for each",
-    },
-  ),
+  instructions: expertInstructions("story-analyst"),
   buildContext: (plan: ShotPlan) => ({
     title: plan.title,
     logline: plan.logline,
@@ -38,15 +30,13 @@ export const storyAnalyst: SpecialistDefinition = {
       role: clip(role, 200),
       personality: clip(personality, 200),
     })),
-    scenes: plan.scenes.map((scene, sceneIndex) => ({
-      scene: sceneIndex + 1,
-      title: scene.title,
-      shots: scene.shots.map((shot, shotIndex) => ({
-        id: shotId(sceneIndex, shotIndex),
-        action: clip(shot.action),
-        emotion: clip(shot.emotion, 200),
+    scenes: planExcerpt(
+      plan,
+      (shot) => ({ action: clip(shot.action) }),
+      (shot) => ({
+        emotion: clip(shot.emotion, CONTEXT_EMOTION_CHARACTERS),
         dialogue: shot.dialogue.map(({ speaker, line }) => `${speaker}: ${clip(line, 240)}`),
-      })),
-    })),
+      }),
+    ),
   }),
 };

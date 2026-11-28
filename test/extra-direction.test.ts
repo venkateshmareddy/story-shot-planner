@@ -50,3 +50,16 @@ test("the plan request still rejects more answers than interview plus directions
   assert.ok(planAccepts(interview(MAX_PLAN_ANSWERS)));
   assert.ok(!planAccepts(interview(MAX_PLAN_ANSWERS + 1)));
 });
+
+test("the creative team accepts the same answer count as the plan (interview + extra directions)", async () => {
+  const { directorRequest } = await import("../src/lib/agents/schemas.ts");
+  const plan = {
+    title: "T", logline: "L", intent: "I", characters: [], locations: [],
+    scenes: [{ title: "One", shots: [{ seconds: 3, framing: "Wide", camera: "Still", characters: [], location: "Rocks", action: "Waves.", dialogue: [], emotion: "Calm", sound: "Sea" }] }],
+    reviewNotes: [],
+  };
+  const parse = (count: number) => directorRequest.safeParse({ plan, messages: [], message: "and then the boy went to a forest", answers: interview(count) });
+  assert.ok(parse(MAX_INTERVIEW_TURNS + 2).success);
+  assert.ok(parse(MAX_PLAN_ANSWERS).success);
+  assert.ok(!parse(MAX_PLAN_ANSWERS + 1).success);
+});

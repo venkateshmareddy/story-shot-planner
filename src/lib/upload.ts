@@ -79,3 +79,8 @@ export function sourceNote(
 export function tooLongForChatMessage(chars: number): string {
   return `This is longer than one chat message (${chars.toLocaleString("en")} characters). Start a new chat and import it there to build the plan from the whole story.`;
 }
+
+export function appendToDraft(draft: string, text: string, separator = " "): string {
+  const kept = draft.trim();
+  return kept ? `${kept}${separator}${text}` : text;
+}

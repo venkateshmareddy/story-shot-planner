@@ -19,6 +19,7 @@ import { storyAnalyst } from "../src/lib/agents/story-analyst.ts";
 import type { DirectorRequest, SpecialistId } from "../src/lib/agents/types.ts";
 import type { ShotPlan } from "../src/lib/story-planning.ts";
 import type { UsageRecord, UsageStep } from "../src/lib/usage.ts";
+import { sectionJson, sectionList, sectionText } from "./model-input.ts";
 
 function makePlan(title = "The Letter"): ShotPlan {
   const shot = (overrides: Partial<ShotPlan["scenes"][number]["shots"][number]> = {}) => ({
@@ -144,7 +145,7 @@ const contextCases = [
   { def: cinematographyDirector, has: ["framing", "camera", "action"], lacks: ["sound", "seconds", "dialogue", "logline"] },
   { def: soundDirector, has: ["sound", "action", "emotion", "dialogue"], lacks: ["framing", "camera", "seconds", "logline"] },
   { def: editingDirector, has: ["seconds", "spokenWords"], lacks: ["framing", "camera", "sound", "dialogue"] },
-  { def: continuityReviewer, has: ["location", "characters", "speakers"], lacks: ["framing", "camera", "sound", "seconds"] },
+  { def: continuityReviewer, has: ["location", "characters", "action"], lacks: ["framing", "camera", "sound", "seconds", "dialogue"] },
 ];
 
 for (const { def, has, lacks } of contextCases) {
@@ -236,8 +237,11 @@ test("synthesis runs once when two specialists succeed", async () => {
     "cinematography-director": () => advice("Camera"),
     "sound-director": () => advice("Sound"),
     orchestrator: (call) => {
-      const input = JSON.parse(call.input);
-      assert.equal(input.specialists.length, 2);
+      const findings = sectionText(call.input, "FINDINGS")?.split("\n") ?? [];
+      assert.deepEqual(
+        findings.filter((line) => !line.startsWith("- ")).map((line) => line.split(":")[0]),
+        ["Camera", "Sound"],
+      );
       return { reply: "One voice.", conflicts: ["Camera wants silence; sound wants rain."] };
     },
   });
@@ -394,7 +398,7 @@ test("one usage record per model call, including unusable results", async () => 
 
 test("concurrent runs with different plans don't leak", async () => {
   const edit = (call: ModelCall) => {
-    const title = JSON.parse(call.input).plan.title as string;
+    const title = sectionJson<{ title: string }>(call.input, "PLAN (JSON)")?.title ?? "";
     return advice(title, [{ scene: 1, shot: 1, field: "framing", value: `Wide for ${title}` }]);
   };
   const fake = fakeDeps({ "cinematography-director": edit }, 20);
@@ -411,16 +415,46 @@ test("concurrent runs with different plans don't leak", async () => {
 });
 
 test("specialist input carries message, approved context and its plan slice", async () => {
-  const seen = new Map<SpecialistId, Record<string, unknown>>();
+  const seen = new Map<SpecialistId, string>();
   const fake = fakeDeps({
     "sound-director": (call) => {
-      seen.set("sound-director", JSON.parse(call.input));
+      seen.set("sound-director", call.input);
       return advice("Sound");
     },
   });
   await runDirector(request("How should the music work?"), fake.deps);
-  const input = seen.get("sound-director");
-  assert.equal(input?.message, "How should the music work?");
-  assert.deepEqual((input?.approved as { collected: { label: string }[] }).collected[0].label, "Sound");
-  assert.ok(!JSON.stringify(input).includes("framing"));
+  const input = seen.get("sound-director") ?? "";
+  assert.equal(sectionText(input, "MESSAGE"), "How should the music work?");
+  assert.match(sectionList(input, "COLLECTED")[0], /^Sound: /);
+  assert.ok(!input.includes("framing"));
+});
+
+test("intent edit skips the experts even when the message names their areas", async () => {
+  const { runDirector } = await import("../src/lib/agents/orchestrator.ts");
+  const plan = {
+    title: "T",
+    logline: "L",
+    intent: "I",
+    characters: [{ name: "Keeper", role: "r", look: "l", personality: "p", voice: "v" }],
+    locations: [{ name: "Rocks", description: "d" }],
+    scenes: [{ title: "One", shots: [{ seconds: 4, framing: "Wide", camera: "Still", characters: ["Keeper"], location: "Rocks", action: "Waves.", dialogue: [], emotion: "Calm", sound: "Sea" }] }],
+    reviewNotes: [],
+  };
+  const expertCalls: string[] = [];
+  let refineCalls = 0;
+  const deps = {
+    callModel: async (call: { step: string }) => {
+      expertCalls.push(call.step);
+      throw new Error("experts must not run");
+    },
+    refine: async () => {
+      refineCalls += 1;
+      return { reply: "I'll revise it. Press Apply to update your board.", changeSummary: ["S01 revised"], plan, usage: [], changed: true };
+    },
+  };
+  const message = "Revise the characters and the story in S01 to be more distinctive, with new camera and sound ideas.";
+  const result = await runDirector({ plan, messages: [], message, intent: "edit" }, deps as never, {});
+  assert.equal(refineCalls, 1);
+  assert.deepEqual(expertCalls, []);
+  assert.equal(result.mode, "refine");
 });

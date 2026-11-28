@@ -1,3 +1,17 @@
+import { brainFile } from "@/lib/server/brain";
+import {
+  answersSection,
+  chatSection,
+  collectedSection,
+  decisionsSection,
+  jsonSection,
+  listSection,
+  memorySection,
+  SECTION,
+  section,
+  sections,
+  textSection,
+} from "@/lib/server/memory-view";
 import {
   type CallModel,
   deadline,
@@ -83,14 +97,12 @@ const FALLBACK_POINTS_PER_SPECIALIST = 2;
 const MAX_CONFLICTS = 8;
 const PRIORITY_RANK = { high: 0, medium: 1, low: 2 } as const;
 
-const SYNTHESIS_INSTRUCTIONS = [
+export const SYNTHESIS_INSTRUCTIONS = [
   SOURCE_RULES,
   DIRECTOR_PERSONA,
   PLAIN_LANGUAGE,
   ANALYSIS_STYLE,
-  "Your specialist team has studied the plan for this request; now you answer the filmmaker yourself. The input holds the filmmaker's message, what the filmmaker has established (established, may be empty), each specialist's findings by discipline (specialists), disciplines that could not respond (failed), deterministic edit conflicts (mergeConflicts) and the plan changes proposed for the filmmaker's approval (proposedChanges).",
-  'reply: ONE coherent Creative Director voice speaking to the filmmaker, never a relay of separate reports ("the Camera expert says"). The first line is a one-line plain answer to the message. Match the length to the request: about 60-150 words for a focused question, up to about 350 words for a review across several areas. When two or more areas matter, give each a label line such as "Story:", "Camera:", "Sound:", "Editing:" or "Consistency:" followed by "- " bullets, the most important point first and tied to scene or shot ids. Say each point once, even when several specialists raise it. Where specialists disagree or a choice trades one quality for another, explain the trade-off and name the alternative. Keep three things visibly distinct: what the filmmaker established, what is assumed (say so), and what you recommend. Use only findings present in the input; add no new recommendations. If proposedChanges is not empty, end by saying those changes wait for their approval; if failed is not empty, say in one short clause which area could not respond.',
-  "conflicts: one sentence per genuine disagreement or trade-off between specialists, including every mergeConflicts entry, naming the alternative the filmmaker could choose; [] when there is none.",
+  brainFile("experts/SYNTHESIS.md"),
 ].join("\n");
 
 type SpecialistResult = {
@@ -99,26 +111,28 @@ type SpecialistResult = {
   usage: UsageRecord;
 };
 
-function approvedContext(input: DirectorRequest, id: SpecialistId) {
+/** Older sessions without a StoryContext: the most relevant collected details, else the latest answers. */
+function approvedSections(input: DirectorRequest, id: SpecialistId) {
   const collected = (input.collected ?? [])
     .map((item, index) => ({ item, index, score: domainScore(`${item.label} ${item.detail}`, id) }))
     .sort((a, b) => b.score - a.score || a.index - b.index)
     .slice(0, 12)
     .map(({ item }) => ({ label: clip(item.label, 80), detail: clip(item.detail, 240) }));
-  if (collected.length) return { collected };
+  if (collected.length) return [collectedSection(collected)];
   const answers = (input.answers ?? [])
     .slice(-6)
     .map(({ question, answer }) => ({ question: clip(question, 160), answer: clip(answer, 300) }));
-  return { answers };
+  return [answersSection(answers)];
 }
 
 /** Structured StoryContext when the client sent one; the flat interview/collected list for older sessions. */
-function projectContext(input: DirectorRequest, definition: SpecialistDefinition) {
+function projectSections(input: DirectorRequest, definition: SpecialistDefinition) {
   const { context } = input;
   if (context && (context.facts.length || context.unresolved.length)) {
-    return { context: specialistContext(context, definition.id, definition.contextCategories) };
+    const { facts, openQuestions } = specialistContext(context, definition.id, definition.contextCategories);
+    return [memorySection(facts), listSection(SECTION.openQuestions, openQuestions)];
   }
-  return { approved: approvedContext(input, definition.id) };
+  return approvedSections(input, definition.id);
 }
 
 /** Filmmaker and approved facts across all categories, most important category first. */
@@ -144,19 +158,20 @@ async function consult(
 ): Promise<SpecialistResult> {
   const timeoutMs = options.specialistTimeoutMs ?? SPECIALIST_TIMEOUT_MS;
   const signal = deadline(options.signal, timeoutMs);
-  const payload = {
-    message: input.message,
-    recent: input.messages.slice(-4).map(({ role, text }) => ({ role, text: clip(text, 300) })),
-    ...projectContext(input, definition),
-    decisions: recentDecisions(input.decisions),
-    ...(definition.readsSource && input.source ? { source: input.source } : {}),
-    plan: definition.buildContext(input.plan, input.references),
-  };
+  // Stable data first, the new message last, so repeat calls on an unchanged plan reuse the cached prefix.
+  const modelInput = sections(
+    jsonSection(SECTION.plan, definition.buildContext(input.plan, input.references)),
+    definition.readsSource ? textSection(SECTION.source, input.source) : "",
+    ...projectSections(input, definition),
+    decisionsSection(recentDecisions(input.decisions)),
+    chatSection(input.messages.slice(-4).map(({ role, text }) => ({ role, text: clip(text, 300) }))),
+    textSection(SECTION.message, input.message),
+  );
   const { output, usage } = await untilAborted(
     deps.callModel({
       step: definition.id,
       instructions: definition.instructions,
-      input: JSON.stringify(payload),
+      input: modelInput,
       schema: definition.schema,
       maxOutputTokens: definition.maxOutputTokens,
       signal,
@@ -236,33 +251,30 @@ async function synthesize(
     MAX_SPECIALIST_RECOMMENDATIONS,
     Math.max(2, Math.floor(SYNTHESIS_RECOMMENDATION_BUDGET / results.length)),
   );
-  const payload = {
-    message: clip(input.message, 1_000),
-    established: establishedFacts(input),
-    specialists: results.map(({ id, output }) => ({
-      discipline: SPECIALIST_LABELS[id],
-      summary: clip(output.summary, 800),
-      recommendations: output.recommendations
-        .filter(({ recommendation }) => recommendation.trim())
-        .slice(0, perSpecialist)
-        .map(({ target, issue, recommendation, rationale, priority }) => ({
-          target: clip(target, 80),
-          priority,
-          issue: clip(issue, 200),
-          recommendation: clip(recommendation, 300),
-          rationale: clip(rationale, 200),
-        })),
-    })),
-    failed: failed.map((id) => SPECIALIST_LABELS[id]),
-    mergeConflicts,
-    proposedChanges: changeSummary.slice(0, 12),
-  };
+  const findings = results.flatMap(({ id, output }) => [
+    `${SPECIALIST_LABELS[id]}: ${clip(output.summary, 800)}`,
+    ...output.recommendations
+      .filter(({ recommendation }) => recommendation.trim())
+      .slice(0, perSpecialist)
+      .map(
+        ({ target, issue, recommendation, rationale, priority }) =>
+          `- ${priority} · ${clip(target, 80) || "Overall"} · issue: ${clip(issue, 200)} · change: ${clip(recommendation, 300)} · why: ${clip(rationale, 200)}`,
+      ),
+  ]);
+  const modelInput = sections(
+    listSection(SECTION.established, establishedFacts(input)),
+    section(SECTION.findings, findings),
+    section(SECTION.failed, failed.map((id) => SPECIALIST_LABELS[id]).join(", ")),
+    listSection(SECTION.mergeConflicts, mergeConflicts),
+    listSection(SECTION.proposedChanges, changeSummary.slice(0, 12)),
+    textSection(SECTION.message, clip(input.message, 1_000)),
+  );
   try {
     const result = await untilAborted(
       deps.callModel({
         step: "orchestrator",
         instructions: SYNTHESIS_INSTRUCTIONS,
-        input: JSON.stringify(payload),
+        input: modelInput,
         schema: synthesisOutput,
         maxOutputTokens: SYNTHESIS_MAX_OUTPUT_TOKENS,
         signal,
@@ -314,7 +326,7 @@ export async function runDirector(
   deps: DirectorDeps,
   options: DirectorOptions = {},
 ): Promise<DirectorResponse> {
-  const selected = selectSpecialists(input.message).slice(0, SPECIALIST_IDS.length);
+  const selected = input.intent === "edit" ? [] : selectSpecialists(input.message).slice(0, SPECIALIST_IDS.length);
   if (!selected.length) return refineFallback(input, deps);
 
   const settled = await Promise.allSettled(

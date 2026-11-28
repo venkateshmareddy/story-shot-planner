@@ -8,6 +8,7 @@ export const maxDuration = 60;
 
 const maxPdfBytes = MAX_UPLOAD_MB.pdf * BYTES_PER_MB;
 const pdfSizeError = `Choose a PDF that is ${MAX_UPLOAD_MB.pdf} MB or smaller.`;
+const interruptedError = "The upload was interrupted. Try again.";
 const scannedError =
   "This PDF has no selectable text — it looks like scanned images. Paste the story, upload a TXT file, or use a PDF with selectable text.";
 
@@ -55,18 +56,23 @@ export async function POST(request: Request) {
     // pdf.js detaches the buffer it is given, so it must not share Node's pooled Buffer memory.
     bytes = Uint8Array.from(body);
   } catch {
-    return reject("The upload was interrupted. Try again.", 400);
+    return reject(interruptedError, 400);
   }
 
   if (!new TextDecoder().decode(bytes.subarray(0, 1024)).includes("%PDF-")) {
     return reject("This file doesn’t appear to be a PDF.", 422);
   }
 
+  const { signal } = request;
+  if (signal.aborted) return reject(interruptedError, 400);
   let pages: string[];
   let pageCount: number;
   try {
     const pdf = await getDocumentProxy(bytes);
+    const stop = () => void pdf.loadingTask.destroy();
+    signal.addEventListener("abort", stop, { once: true });
     try {
+      if (signal.aborted) return reject(interruptedError, 400);
       pageCount = pdf.numPages;
       if (pageCount > MAX_PDF_PAGES) {
         return reject(
@@ -76,9 +82,11 @@ export async function POST(request: Request) {
       }
       pages = (await extractText(pdf, { mergePages: false })).text;
     } finally {
+      signal.removeEventListener("abort", stop);
       await pdf.loadingTask.destroy();
     }
   } catch (error) {
+    if (signal.aborted) return reject(interruptedError, 400);
     console.warn("PDF import failed", { reason: error instanceof Error ? error.name : "unknown" });
     return reject(readFailure(error), 422);
   }

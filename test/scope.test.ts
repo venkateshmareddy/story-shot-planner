@@ -5,6 +5,7 @@ import { findTargetScenes, isSceneStructureEdit } from "../src/lib/agents/scope.
 import type { DirectorRequest, ImageReference } from "../src/lib/agents/types.ts";
 import type { RefineRequest, ShotPlan } from "../src/lib/story-planning.ts";
 import type { UsageRecord } from "../src/lib/usage.ts";
+import { sectionJson } from "./model-input.ts";
 
 // --- Parsing ---
 
@@ -195,6 +196,6 @@ test("reference images are passed to the cinematography context", async () => {
   await runDirector({ ...request("Improve the camera angles"), references: [reference] }, fake.deps);
   const call = fake.modelCalls.find(({ step }) => step === "cinematography-director");
   assert.ok(call);
-  const payload = JSON.parse(call.input) as { plan: { references?: { name: string }[] } };
-  assert.equal(payload.plan.references?.[0]?.name, "Dusk porch");
+  const plan = sectionJson<{ references?: { name: string }[] }>(call.input, "PLAN (JSON)");
+  assert.equal(plan?.references?.[0]?.name, "Dusk porch");
 });

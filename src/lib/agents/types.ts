@@ -65,6 +65,8 @@ export type DirectorRequest = {
   decisions?: DecisionRecord[];
   /** The filmmaker's imported story (or its digest), headed by the client. The Story and Consistency experts and refine use it. */
   source?: string;
+  /** "edit": the filmmaker asked for a concrete revision — skip the experts and run the plan edit directly. */
+  intent?: "edit";
 };
 
 /** One resolved proposal: what was asked, what changed, and whether the filmmaker applied or discarded it. */

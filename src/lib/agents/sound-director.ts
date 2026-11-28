@@ -1,50 +1,42 @@
 import type { ShotPlan } from "@/lib/story-planning";
 import { specialistOutput } from "./schemas";
 import {
+  expertInstructions,
+  CONTEXT_ACTION_CHARACTERS,
+  CONTEXT_EMOTION_CHARACTERS,
   clip,
+  type PlanShot,
+  planExcerpt,
   SPECIALIST_MAX_OUTPUT_TOKENS,
   type SpecialistDefinition,
-  shotId,
-  specialistInstructions,
+  specialistRole,
 } from "./shared";
 
 const fields = ["sound"] as const;
 
+const spokenLine = ({ speaker, line, delivery }: PlanShot["dialogue"][number]) =>
+  `${speaker}${delivery.trim() ? ` (${clip(delivery, 120)})` : ""}: ${clip(line, 240)}`;
+
 export const soundDirector: SpecialistDefinition = {
   id: "sound-director",
-  role: "Sound Director",
+  role: specialistRole("sound-director"),
   fields,
   contextCategories: ["sound", "dialogue", "locations", "genre", "intent"],
   schema: specialistOutput(fields),
   maxOutputTokens: SPECIALIST_MAX_OUTPUT_TOKENS,
-  instructions: specialistInstructions(
-    "Sound Director",
-    "You think like a professional sound designer and music supervisor: the soundtrack should carry emotion, place and transitions, and you flag where sound should lead or contrast the picture.",
-    "Field: sound is shot-level and holds the complete sound design for the shot (ambience, effects, music, silence, mix emphasis).",
-    {
-      id: "sound-director",
-      checklist:
-        "dialogue clarity and delivery; ambience (the background sound of a place); Foley (recorded everyday sounds such as footsteps or cloth); sound effects; music; silence; sound transitions between shots and scenes; sound continuity and sync with the picture",
-    },
-  ),
+  instructions: expertInstructions("sound-director"),
   buildContext: (plan: ShotPlan) => ({
     title: plan.title,
     intent: plan.intent,
-    scenes: plan.scenes.map((scene, sceneIndex) => ({
-      scene: sceneIndex + 1,
-      title: scene.title,
-      shots: scene.shots.map((shot, shotIndex) => ({
-        id: shotId(sceneIndex, shotIndex),
+    scenes: planExcerpt(
+      plan,
+      ({ sound }) => ({ sound }),
+      (shot) => ({
         location: shot.location,
-        action: clip(shot.action),
-        emotion: clip(shot.emotion, 200),
-        sound: shot.sound,
-        dialogue: shot.dialogue.map(({ speaker, line, delivery }) => ({
-          speaker,
-          line: clip(line, 240),
-          delivery: clip(delivery, 120),
-        })),
-      })),
-    })),
+        action: clip(shot.action, CONTEXT_ACTION_CHARACTERS),
+        emotion: clip(shot.emotion, CONTEXT_EMOTION_CHARACTERS),
+        dialogue: shot.dialogue.map(spokenLine),
+      }),
+    ),
   }),
 };

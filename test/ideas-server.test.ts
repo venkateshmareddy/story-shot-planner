@@ -363,7 +363,7 @@ test("usage is the 'ideas' step from the real response usage, and incomplete res
   } as unknown as Parameters<typeof openAIIdeasModel>[0];
 
   const result = await runIdeas(generate(SURPRISE_ME), openAIIdeasModel(client));
-  const expected: UsageRecord = { step: "ideas", model: STORY_MODEL, inputTokens: 1_234, outputTokens: 567, totalTokens: 1_801 };
+  const expected: UsageRecord = { step: "ideas", model: "some-snapshot", inputTokens: 1_234, outputTokens: 567, totalTokens: 1_801 };
   assert.deepEqual(result.usage, expected);
   assert.equal(requests[0].model, STORY_MODEL);
   assert.equal(requests[0].store, false);

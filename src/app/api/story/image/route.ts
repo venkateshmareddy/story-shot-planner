@@ -7,7 +7,8 @@ import {
   matchesImageType,
   referenceName,
 } from "@/lib/server/image-analysis";
-import { getOpenAI, jsonError, modelError } from "@/lib/server/openai";
+import { resolveStoryModel } from "@/lib/server/model-catalog";
+import { getOpenAI, jsonError, modelError, pinStoryModel } from "@/lib/server/openai";
 import { readBody } from "@/lib/server/read-body";
 
 export const runtime = "nodejs";
@@ -32,7 +33,9 @@ export async function POST(request: Request) {
   if (!client) return jsonError("Add OPENAI_API_KEY to the server’s .env file to analyse images.", 503);
 
   try {
-    return Response.json(await analyseImage(client, image, type, referenceName(request.headers.get("x-image-name"))));
+    const name = referenceName(request.headers.get("x-image-name"));
+    const pinned = pinStoryModel(client, resolveStoryModel(request));
+    return Response.json(await analyseImage(pinned, image, type, name, { signal: request.signal }));
   } catch (error) {
     if (error instanceof IncompleteImageAnalysisError) {
       return jsonError("The model couldn’t finish reading this image. Try again.", 502);

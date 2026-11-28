@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { DirectorError, directorFailureMessage, runDirector } from "@/lib/agents/orchestrator";
 import { directorRequest } from "@/lib/agents/schemas";
 import type { DirectorResponse } from "@/lib/agents/types";
+import { resolveStoryModel } from "@/lib/server/model-catalog";
 import { createModelCaller, getOpenAI, jsonError, modelError } from "@/lib/server/openai";
 import { readBody } from "@/lib/server/read-body";
 import { INVALID_REFINED_PLAN_MESSAGE, InvalidRefinedPlanError, runRefine } from "@/lib/server/refine";
@@ -23,12 +24,17 @@ export async function POST(request: Request) {
   }
 
   const parsed = directorRequest.safeParse(body);
-  if (!parsed.success) return jsonError("Provide a plan and a valid message for the creative team.", 400);
+  if (!parsed.success) {
+    console.warn("Rejected director request", {
+      issues: parsed.error.issues.slice(0, 5).map((issue) => ({ path: issue.path.join("."), code: issue.code })),
+    });
+    return jsonError("Provide a plan and a valid message for the creative team.", 400);
+  }
 
   const client = getOpenAI();
   if (!client) return jsonError("Add OPENAI_API_KEY to the server’s .env file to use AI planning.", 503);
 
-  const callModel = createModelCaller(client);
+  const callModel = createModelCaller(client, resolveStoryModel(request));
 
   try {
     const result: DirectorResponse = await runDirector(

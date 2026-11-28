@@ -7,7 +7,8 @@ import {
   digestRequest,
   openAIDigestModel,
 } from "@/lib/server/digest";
-import { getOpenAI, jsonError, modelError } from "@/lib/server/openai";
+import { resolveStoryModel } from "@/lib/server/model-catalog";
+import { getOpenAI, jsonError, modelError, pinStoryModel } from "@/lib/server/openai";
 import { readBody } from "@/lib/server/read-body";
 import { checkSourceText, type DigestResponse, MAX_SOURCE_CHARACTERS } from "@/lib/source-text";
 
@@ -39,7 +40,7 @@ export async function POST(request: Request) {
   if (!client) return jsonError("Add OPENAI_API_KEY to the server’s .env file to condense long stories.", 503);
 
   try {
-    const result: DigestResponse = await createDigest(source.text, openAIDigestModel(client), {
+    const result: DigestResponse = await createDigest(source.text, openAIDigestModel(pinStoryModel(client, resolveStoryModel(request))), {
       name: parsed.data.name,
       signal: request.signal,
     });

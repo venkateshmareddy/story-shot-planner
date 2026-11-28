@@ -1,14 +1,16 @@
 "use client";
 
+import { ModelsSection } from "./models-settings";
 import { DataSection, PreferencesSection } from "./settings-view";
 import { UsageView } from "./usage-view";
 import type { StorySession } from "@/lib/session";
 
-export type SettingsSection = "usage" | "preferences" | "data";
+export type SettingsSection = "usage" | "preferences" | "models" | "data";
 
 const NAV: { id: SettingsSection; label: string }[] = [
   { id: "usage", label: "Token usage" },
   { id: "preferences", label: "Preferences" },
+  { id: "models", label: "Models" },
   { id: "data", label: "Data & privacy" },
 ];
 
@@ -57,6 +59,8 @@ export function SettingsScreen({
           <UsageView sessions={sessions} budget={budget} />
         ) : section === "preferences" ? (
           <PreferencesSection budget={budget} onBudgetChange={onBudgetChange} />
+        ) : section === "models" ? (
+          <ModelsSection />
         ) : (
           <DataSection sessionCount={sessions.length} onClearAll={onClearAll} />
         )}

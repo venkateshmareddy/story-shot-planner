@@ -4,6 +4,16 @@ import { clip } from "@/lib/agents/shared";
 import { DEFAULT_FORMAT, type FilmFormat } from "@/lib/formats";
 import { applyRefinePatch, applyRenames, isUsableScene, renameNameColumns, validRenames } from "@/lib/refine-patch";
 import {
+  chatSection,
+  decisionsSection,
+  jsonSection,
+  oneLine,
+  SECTION,
+  section,
+  sections,
+  textSection,
+} from "@/lib/server/memory-view";
+import {
   type CallModel,
   deadline,
   type ModelErrorMetadata,
@@ -73,8 +83,17 @@ export const EDIT_SCENE_TIMEOUT_MS = 100_000;
 const NEIGHBOUR_TEXT_CHARACTERS = 200;
 const MAX_REFERENCED_SCENES = 3;
 
+/** The filmmaker's imported story and verdicts on earlier proposals: stable across a session, so sent early. */
 function history({ decisions, source }: Pick<RefineRequest, "decisions" | "source">) {
-  return { ...(decisions ? { decisions } : {}), ...(source ? { source } : {}) };
+  return [textSection(SECTION.source, source), decisionsSection(decisions)];
+}
+
+function hintsSection(message: string, sceneCount: number) {
+  const named = findTargetScenes(message, sceneCount);
+  return section(SECTION.hints, [
+    `namedScenes: ${named.length ? named.map((index) => `Scene ${index + 1} (index ${index})`).join(", ") : "none"}`,
+    `changesSceneList: ${isSceneStructureEdit(message)}`,
+  ]);
 }
 
 async function decide(
@@ -86,23 +105,24 @@ async function decide(
   const timeoutMs = options.decideTimeoutMs ?? EDIT_PLAN_TIMEOUT_MS;
   const signal = deadline(options.signal, timeoutMs);
   const { plan, messages, message } = input;
-  const payload = {
-    plan,
-    scenePositions: plan.scenes.map(({ title }, index) => ({ index, number: index + 1, title })),
-    hints: {
-      namedScenes: findTargetScenes(message, plan.scenes.length),
-      changesSceneList: isSceneStructureEdit(message),
-    },
-    messages,
-    message,
+  const modelInput = sections(
+    jsonSection(SECTION.plan, plan),
+    section(
+      SECTION.sceneIndexes,
+      plan.scenes.map(({ title }, index) => `${index} = Scene ${index + 1}: ${oneLine(title)}`),
+    ),
     ...history(input),
-  };
+    chatSection(messages),
+    hintsSection(message, plan.scenes.length),
+    textSection(SECTION.message, message),
+  );
   try {
     const { output, usage } = await untilAborted(
       callModel({
         step: "refine",
+        stage: "edit_plan",
         instructions: composeInstructions("edit_plan", format),
-        input: JSON.stringify(payload),
+        input: modelInput,
         schema: editPlanOutput,
         maxOutputTokens: EDIT_PLAN_MAX_OUTPUT_TOKENS,
         signal,
@@ -151,38 +171,51 @@ type SceneContext = {
   request: Pick<RefineRequest, "message" | "decisions" | "source">;
 };
 
-function neighbour(context: SceneContext, index: number) {
+function neighbour(context: SceneContext, side: "Before" | "After", index: number) {
   const scene = context.renamed.scenes[index];
-  if (!scene) return null;
+  if (!scene) return `${side}: none`;
   const change = context.changes.find((item) => item.index === index && item.action !== "insert_after");
-  return {
-    number: index + 1,
-    title: scene.title,
-    opens: clip(scene.shots[0]?.action ?? "", NEIGHBOUR_TEXT_CHARACTERS),
-    ends: clip(scene.shots.at(-1)?.action ?? "", NEIGHBOUR_TEXT_CHARACTERS),
-    ...(change ? { change: change.action === "remove" ? "removed" : `rewritten: ${clip(change.instruction, 300)}` } : {}),
-  };
+  const parts = [
+    `${side}: Scene ${index + 1} · ${oneLine(scene.title)}`,
+    `opens: ${clip(scene.shots[0]?.action ?? "", NEIGHBOUR_TEXT_CHARACTERS)}`,
+    `ends: ${clip(scene.shots.at(-1)?.action ?? "", NEIGHBOUR_TEXT_CHARACTERS)}`,
+  ];
+  if (change) parts.push(`change: ${change.action === "remove" ? "removed" : `rewritten: ${clip(change.instruction, 300)}`}`);
+  return parts.join(" | ");
 }
 
-function scenePayload(context: SceneContext, change: SceneChange) {
+/** Shared by every scene call of one edit first, then this scene's own part, instruction last. */
+function sceneInput(context: SceneContext, change: SceneChange) {
   const { renamed, request } = context;
   const rewrite = change.action === "rewrite";
   const before = rewrite ? change.index - 1 : change.index;
   const referenced = findTargetScenes(change.instruction, renamed.scenes.length)
     .filter((index) => !rewrite || index !== change.index)
     .slice(0, MAX_REFERENCED_SCENES);
-  return {
-    overview: context.overview,
-    renames: context.renames,
-    scene: rewrite ? { number: change.index + 1, ...renamed.scenes[change.index] } : null,
-    ...(rewrite ? {} : { newSceneAfter: change.index + 1 }),
-    referencedScenes: referenced.map((index) => ({ number: index + 1, ...renamed.scenes[index] })),
-    before: neighbour(context, before),
-    after: neighbour(context, before + (rewrite ? 2 : 1)),
-    instruction: change.instruction,
-    message: request.message,
+  const follows = change.index + 1;
+  return sections(
+    jsonSection(SECTION.overview, context.overview),
+    section(
+      SECTION.renames,
+      context.renames.map(({ from, to }) => `- ${oneLine(from)} → ${oneLine(to)}`),
+    ),
     ...history(request),
-  };
+    textSection(SECTION.message, request.message),
+    rewrite
+      ? jsonSection(SECTION.scene, { number: change.index + 1, ...renamed.scenes[change.index] })
+      : section(SECTION.newScene, follows === 0 ? "Goes first, before Scene 1." : `Goes after Scene ${follows}.`),
+    referenced.length
+      ? jsonSection(
+          SECTION.referenced,
+          referenced.map((index) => ({ number: index + 1, ...renamed.scenes[index] })),
+        )
+      : "",
+    section(SECTION.neighbours, [
+      neighbour(context, "Before", before),
+      neighbour(context, "After", before + (rewrite ? 2 : 1)),
+    ]),
+    section(SECTION.instruction, oneLine(change.instruction)),
+  );
 }
 
 async function writeScene(
@@ -199,8 +232,9 @@ async function writeScene(
     const result = await untilAborted(
       callModel({
         step: "refine",
+        stage: "edit_scene",
         instructions: composeInstructions("edit_scene", context.format),
-        input: JSON.stringify(scenePayload(context, change)),
+        input: sceneInput(context, change),
         schema: sceneRewriteOutput,
         maxOutputTokens: EDIT_SCENE_MAX_OUTPUT_TOKENS,
         signal,

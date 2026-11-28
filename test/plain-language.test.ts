@@ -25,6 +25,7 @@ test("plain language targets a 12-year-old reader and rules out poetic lines wit
   assert.ok(PLAIN_LANGUAGE.includes("No poetic, literary or metaphorical lines"));
   assert.ok(PLAIN_LANGUAGE.includes("The keeper can watch for ships all night and still have no idea where she came from."));
   assert.ok(PLAIN_LANGUAGE.includes("characters' dialogue can sound however the story needs"));
+  assert.ok(PLAIN_LANGUAGE.includes("in brackets, for example close-up (the camera very near the face)"));
 });
 
 test("discovery asks one short question with tappable options and a plain why", () => {
@@ -43,6 +44,9 @@ test("analysis opens with a one-line plain answer, then grouped points with term
   assert.ok(ANALYSIS_STYLE.includes("the first line is a one-line plain answer"));
   assert.ok(ANALYSIS_STYLE.includes('lines starting with "- ", one idea per point'));
   assert.ok(ANALYSIS_STYLE.includes("label lines ending in a colon"));
-  assert.ok(ANALYSIS_STYLE.includes("in brackets"));
+  for (const step of ["draft", "plan_outline", "edit_plan"] as const) {
+    const composed = composeInstructions(step, "short_film");
+    assert.ok(composed.includes(ANALYSIS_STYLE) && composed.includes(PLAIN_LANGUAGE), step);
+  }
   assert.ok(ANALYSIS_STYLE.includes("S01_SH02"));
 });

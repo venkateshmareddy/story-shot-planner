@@ -9,7 +9,7 @@ import {
   STOP_RECOMMENDATION,
   stopTurn,
 } from "../src/lib/interview.ts";
-import { composeInstructions, PLAIN_LANGUAGE } from "../src/lib/server/prompts.ts";
+import { composeInstructions, DISCOVERY_STYLE, PLAIN_LANGUAGE } from "../src/lib/server/prompts.ts";
 import {
   type ContextFact,
   contextReadiness,
@@ -33,6 +33,8 @@ function turn(overrides: Partial<InterviewTurnOutput> = {}): InterviewTurnOutput
     rationale: "The audience needs someone to follow.",
     recommendation: "",
     facts: [],
+    visuals: [],
+    asks: "",
     unresolved: [],
     ...overrides,
   };
@@ -235,7 +237,9 @@ test("interview prompt builds on the latest answer without demanding a rationale
   assert.ok(prompt.includes("Build the next question on the filmmaker's latest answer"));
   assert.ok(prompt.includes("never re-ask an earlier question in different words"));
   assert.ok(prompt.includes("ask only the most important one now"));
-  assert.ok(prompt.includes("Put 2–4 short answer choices that fit this story in options, never inside the question"));
+  assert.ok(prompt.includes(DISCOVERY_STYLE));
+  assert.ok(DISCOVERY_STYLE.includes("options: 2–4 short answer choices that fit this story"));
+  assert.ok(DISCOVERY_STYLE.includes("never put the answer choices inside the question"));
   assert.ok(!prompt.includes("offer 2–3 concrete options"));
   assert.ok(prompt.includes("Never ask for anything already known, answered or reasonably inferable"));
   assert.ok(!prompt.includes("a rationale saying why it helps the film"));
@@ -245,9 +249,9 @@ test("interview prompt builds on the latest answer without demanding a rationale
 test("plan prompts bind user/approved facts, list assumptions and allow original dialogue", () => {
   const outline = composeInstructions("plan_outline", "short_film");
   assert.ok(outline.includes(PLAIN_LANGUAGE));
-  assert.ok(outline.includes("approved true as binding"));
+  assert.ok(outline.includes("every From the filmmaker or Approved fact as binding"));
   assert.ok(outline.includes("assumptions in reviewNotes"));
-  assert.ok(outline.includes("context.removed"));
+  assert.ok(outline.includes("REMOVED lists details the filmmaker deleted: never use them"));
   const scene = composeInstructions("plan_scene", "short_film");
   assert.ok(scene.includes(PLAIN_LANGUAGE));
   assert.ok(scene.includes("original dialogue"));

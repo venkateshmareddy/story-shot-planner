@@ -39,7 +39,6 @@ export const planningRequest = z.discriminatedUnion("step", [
 
 export const draftOutput = z.object({
   story: z.string(),
-  reason: z.string(),
 });
 
 export const characterSchema = z.object({

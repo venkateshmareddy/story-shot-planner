@@ -24,6 +24,7 @@ import {
   sceneRewriteOutput,
 } from "../src/lib/story-planning.ts";
 import type { UsageRecord } from "../src/lib/usage.ts";
+import { sectionJson, sectionList, sectionText, sectionTitles } from "./model-input.ts";
 
 type Scene = ShotPlan["scenes"][number];
 type Shot = Scene["shots"][number];
@@ -108,9 +109,56 @@ type ScenePayload = {
   after: { number: number; title: string; opens: string; ends: string; change?: string } | null;
   instruction: string;
   message: string;
-  decisions?: unknown;
+  decisions: string[];
   source?: string;
 };
+
+type Neighbour = NonNullable<ScenePayload["before"]>;
+
+/** "Before: Scene 2 · Title | opens: … | ends: … | change: …" or "Before: none". */
+function neighbourOf(line: string | undefined): Neighbour | null {
+  assert.ok(line, "neighbour line missing");
+  if (/^(?:Before|After): none$/.test(line)) return null;
+  const [head, opens, ends, change] = line.split(" | ");
+  const match = /^(?:Before|After): Scene (\d+) · (.*)$/.exec(head);
+  assert.ok(match, line);
+  return {
+    number: Number(match[1]),
+    title: match[2],
+    opens: opens.replace(/^opens: /, ""),
+    ends: ends.replace(/^ends: /, ""),
+    ...(change ? { change: change.replace(/^change: /, "") } : {}),
+  };
+}
+
+/** An edit_scene input read back into the fields the scene call is given. */
+function scenePayload(input: string): ScenePayload {
+  const neighbours = (sectionText(input, "NEIGHBOURS") ?? "").split("\n");
+  const newScene = sectionText(input, "NEW SCENE");
+  const source = sectionText(input, "STORY SOURCE");
+  return {
+    overview: sectionJson<ScenePayload["overview"]>(input, "OVERVIEW (JSON)")!,
+    renames: sectionList(input, "RENAMES").map((line) => {
+      const [from, to] = line.split(" → ");
+      return { from, to };
+    }),
+    scene: sectionJson<Scene & { number: number }>(input, "SCENE (JSON)") ?? null,
+    ...(newScene === undefined
+      ? {}
+      : { newSceneAfter: newScene.startsWith("Goes first") ? 0 : Number(/Scene (\d+)/.exec(newScene)?.[1]) }),
+    referencedScenes: sectionJson<(Scene & { number: number })[]>(input, "REFERENCED SCENES (JSON)") ?? [],
+    before: neighbourOf(neighbours.find((line) => line.startsWith("Before:"))),
+    after: neighbourOf(neighbours.find((line) => line.startsWith("After:"))),
+    instruction: sectionText(input, "INSTRUCTION") ?? "",
+    message: sectionText(input, "MESSAGE") ?? "",
+    decisions: sectionList(input, "DECISIONS"),
+    ...(source === undefined ? {} : { source }),
+  };
+}
+
+/** 0-based scene indexes the edit_plan HINTS name. */
+const namedScenes = (input: string) =>
+  Array.from((sectionText(input, "HINTS") ?? "").matchAll(/\(index (\d+)\)/g), (match) => Number(match[1]));
 
 function fakeModel(decision: EditPlan | ((call: ModelCall) => unknown), onScene: SceneHandler = () => newScene("Rewritten")) {
   const calls: ModelCall[] = [];
@@ -126,7 +174,7 @@ function fakeModel(decision: EditPlan | ((call: ModelCall) => unknown), onScene:
     inFlight += 1;
     maxInFlight = Math.max(maxInFlight, inFlight);
     try {
-      const output = await onScene(JSON.parse(call.input) as ScenePayload, call);
+      const output = await onScene(scenePayload(call.input), call);
       return { output, usage: usage(1_500) };
     } finally {
       inFlight -= 1;
@@ -181,15 +229,25 @@ test("a rename is one decision call and is applied in code to every shot", async
   assert.equal(call.maxOutputTokens, EDIT_PLAN_MAX_OUTPUT_TOKENS);
   assert.equal(call.timeoutMs, EDIT_PLAN_TIMEOUT_MS);
   assert.equal(call.instructions, composeInstructions("edit_plan", "short_film"));
-  const payload = JSON.parse(call.input);
-  assert.deepEqual(payload.plan, keeperPlan());
-  assert.deepEqual(payload.scenePositions[1], { index: 1, number: 2, title: "The Keeper finds her" });
-  assert.equal(payload.scenePositions.length, 6);
-  assert.deepEqual(payload.hints, { namedScenes: [], changesSceneList: false });
-  assert.equal(payload.message, "the keeper name was aswin");
-  assert.deepEqual(payload.messages, [{ role: "user", text: "Earlier note" }]);
-  assert.deepEqual(payload.decisions, DECISIONS);
-  assert.equal(payload.source, "Imported story:\nText");
+  const { input } = call;
+  assert.deepEqual(sectionTitles(input), [
+    "PLAN (JSON)",
+    "SCENE INDEXES",
+    "STORY SOURCE",
+    "DECISIONS",
+    "RECENT CHAT",
+    "HINTS",
+    "MESSAGE",
+  ]);
+  assert.deepEqual(sectionJson(input, "PLAN (JSON)"), keeperPlan());
+  const indexes = sectionText(input, "SCENE INDEXES")?.split("\n") ?? [];
+  assert.equal(indexes[1], "1 = Scene 2: The Keeper finds her");
+  assert.equal(indexes.length, 6);
+  assert.equal(sectionText(input, "HINTS"), "namedScenes: none\nchangesSceneList: false");
+  assert.equal(sectionText(input, "MESSAGE"), "the keeper name was aswin");
+  assert.equal(sectionText(input, "RECENT CHAT"), "Filmmaker: Earlier note");
+  assert.deepEqual(sectionList(input, "DECISIONS"), ["Discarded: Add a dog → S02: a dog"]);
+  assert.equal(sectionText(input, "STORY SOURCE"), "Imported story:\nText");
 
   assert.equal(result.changed, true);
   assert.match(result.reply, /Press Apply/);
@@ -226,7 +284,7 @@ test("a question gets an answer and no proposal: plan null, nothing to Apply", a
   assert.deepEqual(result.plan, keeperPlan());
   assert.deepEqual(result.changeSummary, []);
   assert.equal(model.calls.length, 1);
-  assert.deepEqual(JSON.parse(model.calls[0].input).hints.namedScenes, [2]);
+  assert.deepEqual(namedScenes(model.calls[0].input), [2]);
 
   const team = await runDirector({ plan: keeperPlan(), messages: [], message: "How long is scene 3?" }, director(fakeModel(editPlan({ reply: "44 seconds." }))));
   assert.equal(team.reply, "44 seconds.");
@@ -264,12 +322,12 @@ test("a whole-film change rewrites every scene in parallel, one call each, with 
     assert.equal(call.timeoutMs, EDIT_SCENE_TIMEOUT_MS);
     assert.equal(call.instructions, composeInstructions("edit_scene", "short_film"));
   }
-  const second = JSON.parse(scenes[1].input) as ScenePayload;
+  const second = scenePayload(scenes[1].input);
   assert.equal(second.scene?.number, 2);
   assert.deepEqual(second.scene?.shots, keeperPlan().scenes[1].shots);
   assert.equal(second.instruction, "Darker scene 2");
   assert.equal(second.message, "Make the whole film darker");
-  assert.deepEqual(second.decisions, DECISIONS);
+  assert.deepEqual(second.decisions, ["Discarded: Add a dog → S02: a dog"]);
   assert.equal(second.source, "Story");
   assert.deepEqual(second.overview.characters, keeperPlan().characters);
   assert.equal(second.before?.number, 1);
@@ -278,9 +336,9 @@ test("a whole-film change rewrites every scene in parallel, one call each, with 
   assert.equal(second.before?.change, "rewritten: Darker scene 1");
   assert.equal(second.after?.number, 3);
   assert.match(second.after?.opens ?? "", /\(3\.1\)/);
-  const first = JSON.parse(scenes[0].input) as ScenePayload;
+  const first = scenePayload(scenes[0].input);
   assert.equal(first.before, null);
-  assert.equal((JSON.parse(scenes[5].input) as ScenePayload).after, null);
+  assert.equal(scenePayload(scenes[5].input).after, null);
 
   assert.deepEqual(result.plan.scenes.map(({ title }) => title), SCENE_TITLES.map((title) => `${title} (dark)`));
   assert.equal(result.usage.length, 7);
@@ -294,7 +352,7 @@ test("only the named scene is rewritten; the others stay byte-identical", async 
     (payload) => ({ ...payload.scene, title: "Rain" }),
   );
   const result = await runRefine(model.callModel, refineInput("Make scene 2 rainy"));
-  assert.deepEqual(JSON.parse(model.calls[0].input).hints.namedScenes, [1]);
+  assert.deepEqual(namedScenes(model.calls[0].input), [1]);
   assert.equal(model.sceneCalls().length, 1);
   assert.equal(result.plan.scenes[1].title, "Rain");
   for (const index of [0, 2, 3, 4, 5]) assert.deepEqual(result.plan.scenes[index], keeperPlan().scenes[index]);
@@ -319,7 +377,7 @@ test("scene calls see the renamed scene and overview, and old names they write b
       ]),
   );
   const result = await runRefine(model.callModel, refineInput("Rename the keeper to Aswin and add a fisher at dawn"));
-  const payload = JSON.parse(model.sceneCalls()[0].input) as ScenePayload;
+  const payload = scenePayload(model.sceneCalls()[0].input);
   assert.deepEqual(payload.renames, [{ from: "Keeper", to: "Aswin" }]);
   assert.deepEqual(payload.overview.characters.map(({ name }) => name), ["Aswin", "Girl", "Dispatcher", "Fisher"]);
   assert.ok(payload.scene?.shots.every(({ characters }) => characters[0] === "Aswin"));
@@ -356,7 +414,7 @@ test("insert and remove: new scenes go in place, removed ones go, and an instruc
   ]);
   assert.deepEqual(result.plan.scenes[5].shots, keeperPlan().scenes[2].shots);
 
-  const [open, moved] = model.sceneCalls().map((call) => JSON.parse(call.input) as ScenePayload);
+  const [open, moved] = model.sceneCalls().map((call) => scenePayload(call.input));
   assert.equal(open.scene, null);
   assert.equal(open.newSceneAfter, 0);
   assert.equal(open.before, null);

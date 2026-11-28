@@ -1,12 +1,14 @@
 import type { z } from "zod";
 import { DEFAULT_FORMAT } from "@/lib/formats";
 import { isStopRequest, MAX_INTERVIEW_TURNS, interviewTurnOutput, resolveInterviewTurn, stopTurn } from "@/lib/interview";
+import { interviewInput } from "@/lib/server/memory-view";
+import { resolveStoryModel } from "@/lib/server/model-catalog";
 import { createModelCaller, getOpenAI, jsonError, ModelOutputError, modelError } from "@/lib/server/openai";
 import { PlanGenerationError, runPlan } from "@/lib/server/plan-generation";
 import { composeInstructions } from "@/lib/server/prompts";
 import { readBody } from "@/lib/server/read-body";
 import { hasStorySource } from "@/lib/source-text";
-import { EMPTY_CONTEXT, missingCategories } from "@/lib/story-context";
+import { EMPTY_CONTEXT } from "@/lib/story-context";
 import { draftOutput, planningRequest } from "@/lib/story-planning";
 
 export const runtime = "nodejs";
@@ -45,17 +47,17 @@ export async function POST(request: Request) {
   if (!client) return jsonError("Add OPENAI_API_KEY to the server’s .env file to use AI planning.", 503);
 
   const format = input.format ?? DEFAULT_FORMAT;
-  const callModel = createModelCaller(client);
+  const callModel = createModelCaller(client, resolveStoryModel(request));
   const generate = async <T extends z.ZodType>(
     step: "draft" | "interview",
     schema: T,
     maxOutputTokens: number,
-    payload: unknown = input,
+    modelInput: string = JSON.stringify(input),
   ) => {
     const { output, usage } = await callModel({
       step,
       instructions: composeInstructions(step, format),
-      input: JSON.stringify(payload),
+      input: modelInput,
       schema,
       maxOutputTokens,
       signal: request.signal,
@@ -75,8 +77,7 @@ export async function POST(request: Request) {
     }
     if (input.step === "interview") {
       const context = input.context ?? EMPTY_CONTEXT;
-      const missing = missingCategories(context).map((category) => category.id);
-      const { output, usage } = await generate("interview", interviewTurnOutput, 2_000, { ...input, context, missing });
+      const { output, usage } = await generate("interview", interviewTurnOutput, 2_000, interviewInput({ ...input, context }));
       const resolved = resolveInterviewTurn(output, input.answered ?? [], context, MAX_INTERVIEW_TURNS, {
         titleOnly: !hasStorySource(input.story),
       });
