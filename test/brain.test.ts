@@ -15,6 +15,7 @@ import {
 import { DIGEST_INSTRUCTIONS } from "../src/lib/server/digest.ts";
 import { IMAGE_ANALYSIS_INSTRUCTIONS } from "../src/lib/server/image-analysis.ts";
 import { composeInstructions, STAGES } from "../src/lib/server/prompts.ts";
+import { TRANSCRIBE_INSTRUCTIONS } from "../src/lib/server/transcription/provider.ts";
 
 const FIXTURE = path.join(import.meta.dirname, "fixtures", "brain-instructions.json");
 
@@ -27,6 +28,7 @@ function finalInstructions(): Record<string, string> {
   for (const [id, definition] of Object.entries(SPECIALISTS)) all[`specialist:${id}`] = definition.instructions;
   all["image-analysis"] = IMAGE_ANALYSIS_INSTRUCTIONS;
   all.digest = DIGEST_INSTRUCTIONS;
+  all.transcribe = TRANSCRIBE_INSTRUCTIONS;
   all.synthesis = SYNTHESIS_INSTRUCTIONS;
   return all;
 }

@@ -74,12 +74,12 @@ function upload(body: Uint8Array, headers: Record<string, string> = {}) {
 }
 
 async function withoutKey(run: () => Promise<void>) {
-  const saved = process.env.OPENAI_API_KEY;
-  delete process.env.OPENAI_API_KEY;
+  const saved = process.env.GEMINI_API_KEY;
+  delete process.env.GEMINI_API_KEY;
   try {
     await run();
   } finally {
-    if (saved !== undefined) process.env.OPENAI_API_KEY = saved;
+    if (saved !== undefined) process.env.GEMINI_API_KEY = saved;
   }
 }
 
@@ -123,7 +123,7 @@ test("real audio, including browser recordings, reaches the key check", async ()
     for (const [bytes, headers] of cases) {
       const response = await POST(upload(bytes, headers));
       assert.equal(response.status, 503, headers["x-audio-extension"]);
-      assert.match((await response.json()).error, /OPENAI_API_KEY/);
+      assert.equal((await response.json()).error, "Voice-to-text isn’t set up yet.");
     }
   });
 });

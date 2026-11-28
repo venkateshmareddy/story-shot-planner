@@ -37,3 +37,11 @@ A feature film has room for several threads: look at the main plot, the subplots
 ## originality_compare
 
 A shared main plot and the order of its big turns matter more than single scenes.
+
+## engagement_scene
+
+A feature has room for quieter scenes between turns: judge each scene by what it adds to its act.
+
+## engagement_summary
+
+Look at the shape across the acts: a clear hook, pressure that rises, a turn in the middle and an earned climax.

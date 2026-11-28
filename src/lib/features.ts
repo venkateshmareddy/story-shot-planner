@@ -1,4 +1,4 @@
-/** Live microphone recording. Off until it's ready; the mic button shows "coming soon". Audio file upload is separate. */
-export const VOICE_RECORDING_ENABLED = false;
+/** Live microphone recording (D-039 switch). When false the mic button only shows "coming soon"; audio upload is separate. */
+export const VOICE_RECORDING_ENABLED = true;
 
 export const COMING_SOON_MESSAGE = "Voice input is coming soon.";

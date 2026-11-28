@@ -29,6 +29,8 @@ const LOW: readonly ModelStage[] = [
   "digest",
   "originality_review",
   "originality_compare",
+  "engagement_scene",
+  "engagement_summary",
 ];
 const MEDIUM: readonly ModelStage[] = ["draft", "plan_outline", "edit_plan", "synthesis", "image-analysis"];
 
@@ -72,7 +74,7 @@ test("the settings table: low for structured or short output, medium where the f
   for (const stage of MEDIUM) assert.equal(MODEL_SETTINGS[stage].verbosity, "medium", stage);
 });
 
-test("a call without a stage runs as its step's stage; plan, refine and originality span stages and name theirs", () => {
+test("a call without a stage runs as its step's stage; plan, refine, originality and engagement span stages and name theirs", () => {
   assert.equal(stageForStep("orchestrator"), "synthesis");
   assert.equal(stageForStep("interview"), "interview");
   assert.equal(stageForStep("draft"), "draft");
@@ -82,6 +84,7 @@ test("a call without a stage runs as its step's stage; plan, refine and original
   assert.equal(stageForStep("transcribe"), null);
   assert.equal(stageForStep("originality"), null);
   assert.equal(stageForStep("originality-lookup"), null);
+  assert.equal(stageForStep("engagement"), null);
 });
 
 test("every stage gets its verbosity, prompt caching off, and no cache key, retention or reasoning", async (t) => {

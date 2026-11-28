@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Packer } from "docx";
-import { PDFDocument } from "pdf-lib";
+import { PDFDocument, StandardFonts } from "pdf-lib";
 import type { ImageReference } from "@/lib/agents/types";
 import { type Blueprint, type BlueprintBlock, buildBlueprint, canExportFinal } from "@/lib/blueprint";
 import { blueprintToDocx } from "@/lib/export/docx";
 import { blueprintToPdf, toWinAnsi } from "@/lib/export/pdf";
 import { createSession, type StorySession } from "@/lib/session";
+import { type StoryContext, toCollected } from "@/lib/story-context";
 import type { ShotPlan } from "@/lib/story-planning";
 
 const DATE = new Date(2026, 10, 27, 15, 30);
@@ -261,4 +262,75 @@ test("blueprintToDocx packs to a valid .docx zip", async () => {
   const buffer = await Packer.toBuffer(blueprintToDocx(buildBlueprint(session, { final: true, date: DATE })));
   assert.equal(buffer.subarray(0, 2).toString("latin1"), "PK");
   assert.ok(buffer.length > 2000);
+});
+
+function lookSession(): StorySession {
+  const context: StoryContext = {
+    facts: [
+      { category: "concept", label: "Story idea", value: "A widower finds a letter", source: "user", approved: true },
+      { category: "lighting", label: "Winter dawn", value: "Pale blue light, frost on the glass", source: "user", approved: true },
+      { category: "locations", label: "Kitchen look", value: "Yellowed tiles, one warm lamp", source: "ai", approved: false },
+      { category: "characters", label: "Elias look", value: "Grey cardigan “always buttoned” → neat", source: "ai", approved: false },
+    ],
+    unresolved: [],
+    visuals: [
+      { name: "Elias", kind: "character", key: true, closed: true },
+      { name: "Garden", kind: "place", key: true },
+      { name: "Kitchen", kind: "place", key: true },
+      { name: "Winter dawn", kind: "conditions", key: true },
+      { name: "Letter", kind: "object", key: true, closed: true },
+      { name: "Teacup", kind: "object", key: false },
+    ],
+  };
+  return { ...fullSession(), context, collected: toCollected(context) };
+}
+
+test("look and feel exports each tracked look once, with its status in words", () => {
+  const bp = buildBlueprint(lookSession(), { final: false, date: DATE });
+  assert.deepEqual(
+    bp.sections.map((item) => item.id).slice(0, 5),
+    ["summary", "about", "known", "looks", "characters"],
+  );
+  const looks = section(bp, "looks");
+  assert.equal(looks.heading, "Look and feel");
+  const list = looks.blocks[0];
+  assert.ok(list.kind === "list");
+  assert.deepEqual(list.items, [
+    { lead: "Winter dawn (Time & weather)", text: "Pale blue light, frost on the glass (from you)" },
+    { lead: "Garden (Place)", text: "Not described" },
+    { lead: "Kitchen (Place)", text: "Yellowed tiles, one warm lamp (AI suggestion — needs approval)" },
+    { lead: "Letter (Object)", text: "Skipped — the AI will choose a look" },
+    { lead: "Elias (Character)", text: "Grey cardigan “always buttoned” → neat (skipped, AI suggestion — needs approval)" },
+  ]);
+  const known = text(section(bp, "known").blocks);
+  assert.match(known, /Story idea: Story idea/);
+  assert.doesNotMatch(known, /Winter dawn|Kitchen look|Elias look/);
+  assert.doesNotMatch(text(looks.blocks), /Teacup/);
+  assert.match(text(section(bp, "characters").blocks), /Grey cardigan/);
+});
+
+test("sessions without tracked looks export no Look and feel section", () => {
+  const plain = buildBlueprint(fullSession(), { final: false, date: DATE });
+  assert.equal(plain.sections.some((item) => item.id === "looks"), false);
+  const session = lookSession();
+  const untracked = buildBlueprint({ ...session, context: { ...session.context!, visuals: undefined } }, { final: false, date: DATE });
+  assert.equal(untracked.sections.some((item) => item.id === "looks"), false);
+  assert.match(text(section(untracked, "known").blocks), /Places and setting: Kitchen look/);
+});
+
+test("look and feel text is WinAnsi-safe and survives PDF and Word export", async () => {
+  const doc = await PDFDocument.create();
+  const supported = new Set((await doc.embedFont(StandardFonts.Helvetica)).getCharacterSet());
+  const bp = buildBlueprint(lookSession(), { final: true, date: DATE });
+  const list = section(bp, "looks").blocks[0];
+  assert.ok(list.kind === "list");
+  for (const item of list.items) {
+    assert.equal(toWinAnsi(item.lead ?? "", supported), item.lead);
+    assert.equal(toWinAnsi(item.text.replace(" → ", " "), supported), item.text.replace(" → ", " "));
+  }
+  assert.match(toWinAnsi(list.items[4].text, supported), /cardigan “always buttoned” -> neat/);
+  const pdf = await blueprintToPdf(bp);
+  assert.equal(new TextDecoder().decode(pdf.slice(0, 4)), "%PDF");
+  const docx = await Packer.toBuffer(blueprintToDocx(bp));
+  assert.equal(docx.subarray(0, 2).toString("latin1"), "PK");
 });

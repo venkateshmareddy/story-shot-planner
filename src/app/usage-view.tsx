@@ -1,7 +1,8 @@
 "use client";
 
-import { STORY_MODEL, TRANSCRIPTION_MODEL } from "@/lib/models";
+import { STORY_MODEL } from "@/lib/models";
 import { totalUsage, type StorySession } from "@/lib/session";
+import { DEFAULT_GEMINI_TRANSCRIBE_MODEL } from "@/lib/transcription";
 import type { UsageRecord } from "@/lib/usage";
 
 const numberFormat = new Intl.NumberFormat();
@@ -20,7 +21,7 @@ export function UsageView({ sessions, budget }: { sessions: StorySession[]; budg
   const usedModels = Array.from(
     new Set(allRecords.filter((record) => !isLookup(record)).map((record) => record.model).filter(Boolean)),
   );
-  const models = usedModels.length > 0 ? usedModels : [STORY_MODEL, TRANSCRIPTION_MODEL];
+  const models = usedModels.length > 0 ? usedModels : [STORY_MODEL, DEFAULT_GEMINI_TRANSCRIBE_MODEL];
 
   return (
     <section className="settings-section-view" aria-labelledby="usage-view-title">

@@ -1,5 +1,5 @@
 import type { FilmFormat } from "@/lib/formats";
-import { type CollectedItem, EXTRA_DIRECTION_QUESTION, type InterviewExchange } from "@/lib/interview";
+import { type CollectedItem, EXTRA_DIRECTION_QUESTION, type InterviewExchange, visualGaps } from "@/lib/interview";
 import {
   type ContextFact,
   EMPTY_CONTEXT,
@@ -8,6 +8,7 @@ import {
   type StoryCategoryId,
   type StoryContext,
 } from "@/lib/story-context";
+import { visualHint } from "@/lib/visual-discovery";
 
 /**
  * The project's memory as the model reads it: compact Markdown sections instead of JSON. Pure. Section titles are
@@ -48,6 +49,11 @@ export const SECTION = {
   planText: "PLAN",
   dismissed: "DISMISSED",
   references: "REFERENCES",
+  film: "FILM",
+  scenes: "SCENES",
+  sceneToAssess: "SCENE TO ASSESS",
+  sceneAssessments: "SCENE ASSESSMENTS",
+  visualGaps: "VISUAL GAPS",
 } as const;
 
 export type SectionTitle = (typeof SECTION)[keyof typeof SECTION];
@@ -191,6 +197,18 @@ export type InterviewRequest = {
   format?: FilmFormat;
 };
 
+const MAX_GAP_LINES = 4;
+
+/** "- name: what to ask about" for the open key looks, then how many look questions are left; "" when none. */
+export function visualGapsSection(context: StoryContext, answered: readonly InterviewExchange[]): string {
+  const { left, gaps } = visualGaps(context, answered);
+  if (!gaps.length) return "";
+  return section(SECTION.visualGaps, [
+    ...gaps.slice(0, MAX_GAP_LINES).map((entity) => `- ${oneLine(entity.name)}: ${visualHint(entity)}`),
+    `Look questions left: ${left}`,
+  ]);
+}
+
 /** One interview turn's input: everything said and known so far, then what is still missing. */
 export function interviewInput({ story, answered = [], context = EMPTY_CONTEXT, format }: InterviewRequest): string {
   return sections(
@@ -201,5 +219,6 @@ export function interviewInput({ story, answered = [], context = EMPTY_CONTEXT, 
     removedSection(context.removed),
     listSection(SECTION.openQuestions, context.unresolved),
     section(SECTION.missing, missingCategories(context).map(({ id }) => id).join(", ")),
+    visualGapsSection(context, answered),
   );
 }

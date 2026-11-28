@@ -1,6 +1,7 @@
 "use client";
 
 import { type KeyboardEvent, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { StopButton } from "./stop-button";
 import {
   DIMENSION_LABELS,
   ORIGINALITY_DIMENSIONS,
@@ -30,6 +31,7 @@ import {
   safeSourceUrl,
   splitFindings,
 } from "@/lib/originality-ui";
+import { STOPPED_MESSAGE } from "@/lib/request-stop";
 import type { ContextFact, StoryContext } from "@/lib/story-context";
 import type { ShotPlan } from "@/lib/story-planning";
 
@@ -40,12 +42,17 @@ export type OriginalityPanelProps = {
   plan: ShotPlan | null;
   context: StoryContext | undefined;
   originality: SessionOriginality | undefined;
+  /** The Wikipedia choice to start from when there is no report yet. */
+  defaultReferences: boolean;
   /** A request is running for this project; every action waits. */
   busy: boolean;
   /** Set while this project's originality check runs. */
   running: { references: boolean } | null;
   error: string;
+  /** The last run was stopped by the filmmaker. */
+  stopped: boolean;
   onRun: (references: boolean) => void;
+  onStop: () => void;
   onClose: () => void;
   onAction: (action: FindingAction, finding: OriginalityFinding) => void;
   onDismiss: (finding: OriginalityFinding) => void;
@@ -133,7 +140,7 @@ function SourceBox({ reference, evidence }: { reference: ReferenceWork; evidence
   );
 }
 
-function ConfirmRevision({
+export function ConfirmRevision({
   facts,
   busy,
   onContinue,
@@ -178,6 +185,7 @@ function FindingCard({
   reference,
   context,
   busy,
+  stale,
   onAction,
   onDismiss,
 }: {
@@ -185,6 +193,8 @@ function FindingCard({
   reference: ReferenceWork | null;
   context: StoryContext | undefined;
   busy: boolean;
+  /** The plan changed since the check: story refs may point at moved scenes, so revising waits for a re-check. */
+  stale: boolean;
   onAction: (action: FindingAction, finding: OriginalityFinding) => void;
   onDismiss: (finding: OriginalityFinding) => void;
 }) {
@@ -278,8 +288,8 @@ function FindingCard({
               ref={reviseRef}
               className="button secondary"
               type="button"
-              disabled={busy}
-              title={FINDING_ACTION_HINTS.revise}
+              disabled={busy || stale}
+              title={stale ? COPY.staleEdit : FINDING_ACTION_HINTS.revise}
               onClick={revise}
             >
               {FINDING_ACTION_LABELS.revise}
@@ -293,6 +303,7 @@ function FindingCard({
             >
               {COPY.dismiss}
             </button>
+          {stale && <p className="orig-basis">{COPY.staleEdit}</p>}
           </div>
         )}
       </article>
@@ -420,6 +431,7 @@ function ReportView({
                     reference={findingReference(finding, report.references)}
                     context={context}
                     busy={busy}
+                    stale={isReportOutOfDate(plan, report)}
                     onAction={onAction}
                     onDismiss={dismiss}
                   />
@@ -465,10 +477,13 @@ export function OriginalityPanel({
   plan,
   context,
   originality,
+  defaultReferences,
   busy,
   running,
   error,
+  stopped,
   onRun,
+  onStop,
   onClose,
   onAction,
   onDismiss,
@@ -477,7 +492,7 @@ export function OriginalityPanel({
   const titleId = useId();
   const headingRef = useRef<HTMLHeadingElement>(null);
   const report = originality?.report;
-  const [references, setReferences] = useState(report?.referenceLookup.requested ?? true);
+  const [references, setReferences] = useState(report?.referenceLookup.requested ?? defaultReferences);
   const [finished, setFinished] = useState(false);
   const wasRunning = useRef(false);
 
@@ -494,6 +509,11 @@ export function OriginalityPanel({
     if (event.key !== "Escape") return;
     event.preventDefault();
     onClose();
+  }
+
+  function stop() {
+    onStop();
+    headingRef.current?.focus();
   }
 
   const runControls = (
@@ -517,15 +537,20 @@ export function OriginalityPanel({
         </button>
       </div>
       <div className="orig-body">
-        <p className={running ? "muted orig-running" : "sr-only"} role="status">
-          {running
-            ? running.references
-              ? COPY.runningWithReferences
-              : COPY.running
-            : finished && !error
-              ? COPY.finished
-              : ""}
-        </p>
+        <div className={running ? "stop-row" : "stop-row-idle"}>
+          <p className={running || stopped ? "muted orig-running" : "sr-only"} role="status">
+            {running
+              ? running.references
+                ? COPY.runningWithReferences
+                : COPY.running
+              : stopped
+                ? STOPPED_MESSAGE
+                : finished && !error
+                  ? COPY.finished
+                  : ""}
+          </p>
+          {running && <StopButton onStop={stop} />}
+        </div>
         {error && !running && (
           <div className="orig-error" role="alert">
             <p className="error">{error}</p>
@@ -548,9 +573,7 @@ export function OriginalityPanel({
           />
         ) : (
           <div className="orig-intro">
-            <p>{COPY.intro}</p>
-            <p className="muted">{COPY.introSafe}</p>
-            {runControls}
+            {!running && !error && runControls}
             <p className="orig-disclaimer">{ORIGINALITY_DISCLAIMER}</p>
           </div>
         )}

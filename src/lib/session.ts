@@ -1,5 +1,6 @@
 import type { ImageReference, Recommendation, SpecialistId } from "@/lib/agents/types";
 import type { CollectedItem } from "@/lib/interview";
+import { type SessionEngagement, sessionEngagementSchema } from "@/lib/engagement";
 import { type SessionOriginality, sessionOriginalitySchema } from "@/lib/originality";
 import { storyContextSchema } from "@/lib/story-context-schema";
 import type { StorySource } from "@/lib/source-text";
@@ -71,6 +72,8 @@ export type StorySession = {
   source?: StorySource;
   /** Latest originality review and the findings the filmmaker dismissed. Optional so older sessions still load. */
   originality?: SessionOriginality;
+  /** Latest Audience Retention Predictor report. Optional so older sessions still load. */
+  engagement?: SessionEngagement;
 };
 
 export type PersistedSessions = {
@@ -146,6 +149,13 @@ export function isStorySource(value: unknown): value is StorySource {
 }
 
 /** Keep the session even if its saved story source is malformed; drop only the bad source. */
+/** Keep the session even if its saved engagement report is malformed; drop only the report. */
+function withValidEngagement(session: StorySession): StorySession {
+  if (session.engagement === undefined || sessionEngagementSchema.safeParse(session.engagement).success) return session;
+  const { engagement: _dropped, ...rest } = session;
+  return rest;
+}
+
 /** Keep the session even if its saved originality report is malformed; drop only the report. */
 function withValidOriginality(session: StorySession): StorySession {
   if (session.originality === undefined || sessionOriginalitySchema.safeParse(session.originality).success) return session;
@@ -213,7 +223,7 @@ export function parseSessions(raw: string | null): PersistedSessions {
     if (!parsed || typeof parsed !== "object") return empty;
     const record = parsed as Record<string, unknown>;
     if (record.version !== SESSIONS_STORAGE_VERSION || !Array.isArray(record.sessions)) return empty;
-    const sessions = record.sessions.filter(isStorySession).map(withValidSource).map(withValidOriginality);
+    const sessions = record.sessions.filter(isStorySession).map(withValidSource).map(withValidOriginality).map(withValidEngagement);
     const activeId = typeof record.activeId === "string" && sessions.some((s) => s.id === record.activeId)
       ? record.activeId
       : (sessions[0]?.id ?? null);

@@ -53,7 +53,67 @@ export type StoryContext = {
   /** Open questions or ambiguities the AI still sees. */
   unresolved: string[];
   removed?: RemovedFact[];
+  /** Things the story shows (places, characters, objects, conditions) whose look discovery tracks. */
+  visuals?: VisualEntity[];
 };
+
+/** Progressive visual discovery (D-050). A look lives in an ordinary fact; this list tracks which things exist. */
+export const VISUAL_KINDS = ["place", "character", "object", "conditions"] as const;
+export type VisualKind = (typeof VISUAL_KINDS)[number];
+
+export type VisualEntity = {
+  /** As the story names it, e.g. "Old house", "Mara", "Time of day and weather". */
+  name: string;
+  kind: VisualKind;
+  /** The film's look depends on it; only key things are ever asked about. */
+  key: boolean;
+  /** Index into `answered` of the turn whose question asked about this look. */
+  asked?: number;
+  /** The filmmaker skipped the question about it: never ask again. */
+  closed?: boolean;
+  /** The story revolves around it: it is asked about first and may get one look question beyond MAX_VISUAL_QUESTIONS. */
+  central?: boolean;
+};
+
+export const MAX_VISUAL_ENTITIES = 12;
+export const MAX_VISUAL_QUESTIONS = 3;
+export const MAX_VISUAL_NAME = 60;
+
+/** Where each kind's look fact is stored — existing categories, so experts, plan and export pick looks up unchanged. */
+export const VISUAL_CATEGORY: Record<VisualKind, StoryCategoryId> = {
+  place: "locations",
+  character: "characters",
+  object: "locations",
+  conditions: "lighting",
+};
+
+/** The look fact's label: "<name> look", except conditions, whose label is the name itself. */
+export function visualLabel(entity: Pick<VisualEntity, "name" | "kind">): string {
+  const name = entity.name.trim().replace(/\s+/g, " ").slice(0, MAX_VISUAL_NAME);
+  return entity.kind === "conditions" ? name : `${name} look`;
+}
+
+export function visualFactKey(entity: Pick<VisualEntity, "name" | "kind">): string {
+  return factKey({ category: VISUAL_CATEGORY[entity.kind], label: visualLabel(entity) });
+}
+
+/** confirmed = the filmmaker said or approved it; ai = an unapproved AI suggestion; open = no look yet; skipped. */
+export type VisualStatus = "confirmed" | "ai" | "open" | "skipped";
+
+export function visualStatus(context: StoryContext, entity: VisualEntity): { status: VisualStatus; fact?: ContextFact } {
+  const key = visualFactKey(entity);
+  const fact = context.facts.find((item) => factKey(item) === key);
+  if (fact && (fact.source === "user" || fact.approved)) return { status: "confirmed", fact };
+  if (entity.closed) return fact ? { status: "skipped", fact } : { status: "skipped" };
+  if (fact) return { status: "ai", fact };
+  return { status: "open" };
+}
+
+/** True when the fact is the look of a tracked visual thing (shown under Look and feel, not the source groups). */
+export function isVisualFact(context: StoryContext, fact: Pick<ContextFact, "category" | "label">): boolean {
+  const key = factKey(fact);
+  return (context.visuals ?? []).some((entity) => visualFactKey(entity) === key);
+}
 
 export const MAX_CONTEXT_FACTS = 80;
 export const MAX_UNRESOLVED = 8;
@@ -79,8 +139,11 @@ function isRemoved(context: StoryContext, fact: ContextFact): boolean {
   return (context.removed ?? []).some((item) => item.key === key && sameFactValue(item.value, fact.value));
 }
 
-function withRemoved(context: StoryContext): Pick<StoryContext, "removed"> {
-  return context.removed?.length ? { removed: context.removed.slice(-MAX_REMOVED_FACTS) } : {};
+function withKept(context: StoryContext): Pick<StoryContext, "removed" | "visuals"> {
+  return {
+    ...(context.removed?.length ? { removed: context.removed.slice(-MAX_REMOVED_FACTS) } : {}),
+    ...(context.visuals?.length ? { visuals: context.visuals.slice(0, MAX_VISUAL_ENTITIES) } : {}),
+  };
 }
 
 /**
@@ -110,12 +173,12 @@ export function mergeFacts(context: StoryContext, updates: ContextFact[]): Story
     const dropIndex = facts.findIndex((fact) => fact.source === "ai" && !fact.approved);
     facts.splice(dropIndex === -1 ? 0 : dropIndex, 1);
   }
-  return { facts, unresolved: context.unresolved.slice(0, MAX_UNRESOLVED), ...withRemoved(context) };
+  return { facts, unresolved: context.unresolved.slice(0, MAX_UNRESOLVED), ...withKept(context) };
 }
 
 export function withUnresolved(context: StoryContext, unresolved: string[]): StoryContext {
   const clean = [...new Set(unresolved.map((item) => item.trim()).filter(Boolean))].slice(0, MAX_UNRESOLVED);
-  return { facts: context.facts, unresolved: clean, ...withRemoved(context) };
+  return { facts: context.facts, unresolved: clean, ...withKept(context) };
 }
 
 export function approveFact(context: StoryContext, key: string): StoryContext {

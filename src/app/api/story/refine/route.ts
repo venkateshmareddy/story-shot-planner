@@ -1,3 +1,4 @@
+import { resolveStoryModel } from "@/lib/server/model-catalog";
 import { createModelCaller, getOpenAI, jsonError, modelError } from "@/lib/server/openai";
 import { readBody } from "@/lib/server/read-body";
 import { INVALID_REFINED_PLAN_MESSAGE, InvalidRefinedPlanError, runRefine } from "@/lib/server/refine";
@@ -25,7 +26,7 @@ export async function POST(request: Request) {
   if (!client) return jsonError("Add OPENAI_API_KEY to the server’s .env file to use AI planning.", 503);
 
   try {
-    const result = await runRefine(createModelCaller(client), parsed.data, {
+    const result = await runRefine(createModelCaller(client, resolveStoryModel(request)), parsed.data, {
       signal: request.signal,
       onFailure: (failure) => console.warn("Plan edit call failed", failure),
     });

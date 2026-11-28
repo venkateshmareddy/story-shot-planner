@@ -5,6 +5,7 @@ import {
   SPECIALIST_IDS,
   SPECIALIST_LABELS,
 } from "@/lib/agents/types";
+import { lookCollectedLabels, lookExportItems } from "@/lib/look-and-feel";
 import type { StorySession } from "@/lib/session";
 import type { ShotPlan } from "@/lib/story-planning";
 
@@ -39,6 +40,7 @@ export type BlueprintSectionId =
   | "summary"
   | "about"
   | "known"
+  | "looks"
   | "characters"
   | "places"
   | "scenes"
@@ -202,6 +204,26 @@ function scenesSection(plan: ShotPlan, runtimeLabel: string): BlueprintBlock[] {
   ];
 }
 
+function knownFields(session: StorySession): BlueprintField[] {
+  const looks = lookCollectedLabels(session.context);
+  return fields(
+    session.collected
+      .filter((item) => !looks.has(item.label))
+      .map((item): [string, string] => [clean(item.label) || "Detail", item.detail]),
+  );
+}
+
+function looksSection(session: StorySession): BlueprintBlock[] {
+  return [
+    {
+      kind: "list",
+      items: lookExportItems(session.context)
+        .map((item) => ({ lead: clean(item.lead), text: clean(item.text) }))
+        .filter((item) => item.lead && item.text),
+    },
+  ];
+}
+
 function approvedChanges(session: StorySession): BlueprintListItem[] {
   return textItems(
     session.messages.flatMap((message) =>
@@ -310,8 +332,9 @@ export function buildBlueprint(session: StorySession, options: BlueprintOptions)
     {
       id: "known",
       heading: "What we know so far",
-      blocks: [{ kind: "fields", fields: fields(session.collected.map((item) => [clean(item.label) || "Detail", item.detail])) }],
+      blocks: [{ kind: "fields", fields: knownFields(session) }],
     },
+    { id: "looks", heading: "Look and feel", blocks: looksSection(session) },
     { id: "characters", heading: "Characters", blocks: plan ? charactersSection(plan) : [] },
     {
       id: "places",

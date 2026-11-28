@@ -1,3 +1,4 @@
+import { MAX_KEY_FACTORS, MAX_RECOMMENDATIONS } from "@/lib/engagement";
 import { FILM_FORMATS, type FilmFormat } from "@/lib/formats";
 import { MAX_COMBINE, MAX_CONCEPTS, MIN_CONCEPTS, SURPRISE_ME } from "@/lib/ideas";
 import { MAX_OPTIONS } from "@/lib/interview";
@@ -5,6 +6,7 @@ import { MAX_FINDINGS, MAX_REFERENCES, MAX_TROPES, SEVERITIES, SEVERITY_DEFINITI
 import { brainFile, brainSections } from "@/lib/server/brain";
 import { DECIDE_ANSWER, MAX_UNRESOLVED, SKIPPED_ANSWER } from "@/lib/story-context";
 import { MAX_PLAN_SCENES, MAX_RENAMES } from "@/lib/story-planning";
+import { MAX_VISUAL_MENTIONS } from "@/lib/visual-discovery";
 
 export type Stage =
   | "draft"
@@ -15,7 +17,9 @@ export type Stage =
   | "edit_scene"
   | "ideas"
   | "originality_review"
-  | "originality_compare";
+  | "originality_compare"
+  | "engagement_scene"
+  | "engagement_summary";
 
 export const STAGES: readonly Stage[] = [
   "draft",
@@ -27,6 +31,8 @@ export const STAGES: readonly Stage[] = [
   "ideas",
   "originality_review",
   "originality_compare",
+  "engagement_scene",
+  "engagement_summary",
 ];
 
 export const SOURCE_RULES = brainFile("SAFETY.md");
@@ -57,9 +63,11 @@ const STAGE_VARS = {
   SHOT_RULES: brainFile("rules/SHOTS.md"),
   EDIT_HISTORY: brainFile("rules/EDIT_HISTORY.md", { SOURCE_STORY_RULE }),
   EDIT_DATA: brainFile("rules/EDIT_DATA.md"),
+  ENGAGEMENT_RUBRIC: brainFile("rules/ENGAGEMENT_RUBRIC.md"),
   MAX_PLAN_SCENES,
   MAX_RENAMES,
   MAX_UNRESOLVED,
+  MAX_VISUAL_MENTIONS,
   SKIPPED_ANSWER,
   DECIDE_ANSWER,
   SURPRISE_ME,
@@ -70,6 +78,8 @@ const STAGE_VARS = {
   MAX_FINDINGS,
   MAX_CANDIDATES: MAX_REFERENCES,
   SEVERITY_RULES: SEVERITIES.map((severity) => `${severity}: ${SEVERITY_DEFINITIONS[severity]}`).join(" "),
+  MAX_KEY_FACTORS,
+  MAX_RECOMMENDATIONS,
 };
 
 const STAGE_BASE = Object.fromEntries(
@@ -87,7 +97,7 @@ const FORMAT_PROMPTS = Object.fromEntries(FILM_FORMATS.map((format) => [format, 
   Record<FilmFormat, Readonly<Record<Stage, string>>>
 >;
 
-// Ideas, plan_scene and edit_scene return data (concepts, shots), not a reply to the filmmaker; neither conversation style fits.
+// Ideas, plan_scene, edit_scene and the engagement stages return data (concepts, shots, short assessment fields), not a reply; neither conversation style fits.
 const STAGE_STYLE: Record<Stage, string> = {
   draft: ANALYSIS_STYLE,
   interview: DISCOVERY_STYLE,
@@ -98,6 +108,8 @@ const STAGE_STYLE: Record<Stage, string> = {
   ideas: "",
   originality_review: ANALYSIS_STYLE,
   originality_compare: ANALYSIS_STYLE,
+  engagement_scene: "",
+  engagement_summary: "",
 };
 
 export function composeInstructions(step: Stage, format: FilmFormat): string {

@@ -1,16 +1,35 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
-import { VoiceRecorder } from "./voice-recorder";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { ActionMenu } from "./action-menu";
+import { MicButton, RecordingPanel, TranscribingPanel, useVoiceRecorder, VoiceProblem } from "./voice-recorder";
 import { type ImageReference, type Recommendation, SPECIALIST_LABELS, type SpecialistId } from "@/lib/agents/types";
 import { AUDIO_ACCEPT } from "@/lib/audio";
 import { formatReply } from "@/lib/format-reply";
 import { type PlanChange, planDiff } from "@/lib/plan-diff";
 import { proposalConfirmation } from "@/lib/proposal-copy";
-import { DISCOVERY_ACTIONS, ORIGINALITY_ACTION, QUICK_ACTIONS, showOriginalityAction } from "@/lib/quick-actions";
+import {
+  DISCOVERY_ACTIONS,
+  EXPERT_ACTIONS,
+  EXPERT_MENU_LABEL,
+  FULL_REVIEW_ACTION,
+  REPORT_ACTIONS,
+  type ReportId,
+  reportName,
+  reportTitle,
+  showReportAction,
+} from "@/lib/quick-actions";
 import { MAX_ANSWER_CHARACTERS, MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
 import type { ChatMessage, StorySession } from "@/lib/session";
 import type { ShotPlan } from "@/lib/story-planning";
+import {
+  composerVoiceStage,
+  coversDraft,
+  sendButtonState,
+  sendClickAction,
+  stopTargets,
+  voiceNote,
+} from "@/lib/voice-ui";
 
 const PRIORITY_LABELS: Record<Recommendation["priority"], string> = { high: "High", medium: "Medium", low: "Low" };
 const OPEN_NOTES_LIMIT = 3;
@@ -22,6 +41,7 @@ const UPLOADING_LABELS = {
   image: "Studying your image…",
   audio: "Transcribing your audio file…",
 } as const;
+const REPORT_ICONS: Record<ReportId, string> = { originality: "◎", engagement: "↗" };
 
 export type UploadingKind = keyof typeof UPLOADING_LABELS;
 
@@ -329,13 +349,18 @@ export function ConversationPanel({
   input,
   transcribing,
   voiceError,
+  micError,
+  voiceAdded,
   canGeneratePlan,
   uploading,
   busyText,
-  originalityOpen,
-  onOpenOriginality,
+  stopNotice,
+  openReport,
+  onOpenReport,
   onInput,
   onSend,
+  onStop,
+  onStopUpload,
   onQuickAction,
   onDiscoveryAction,
   onAnswerOption,
@@ -345,6 +370,7 @@ export function ConversationPanel({
   onEditAnswer,
   onVoice,
   onVoiceActive,
+  onClearMicError,
   onUpload,
   onRetry,
 }: {
@@ -354,14 +380,20 @@ export function ConversationPanel({
   input: string;
   transcribing: boolean;
   voiceError: string;
+  micError: string;
+  /** Bumps each time a voice transcript lands in the box; 0 once the filmmaker edits or sends. */
+  voiceAdded: number;
   canGeneratePlan: boolean;
   uploading: UploadingKind | null;
   busyText?: string;
-  /** The originality report covers this panel; it stays mounted so the chat keeps its state. */
-  originalityOpen: boolean;
-  onOpenOriginality: () => void;
+  stopNotice: string;
+  /** An open report covers this panel; it stays mounted so the chat keeps its state. */
+  openReport: ReportId | null;
+  onOpenReport: (id: ReportId) => void;
   onInput: (value: string) => void;
   onSend: () => void;
+  onStop: () => void;
+  onStopUpload: () => void;
   onQuickAction: (message: string) => void;
   onDiscoveryAction: (label: string) => void;
   onAnswerOption: (option: string) => void;
@@ -371,24 +403,39 @@ export function ConversationPanel({
   onEditAnswer: (messageId: string, text: string) => boolean;
   onVoice: (file: File) => void;
   onVoiceActive: (active: boolean) => void;
+  onClearMicError: () => void;
   onUpload: (file: File) => void;
   onRetry: () => void;
 }) {
   const logEnd = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
-  const originalityChipRef = useRef<HTMLButtonElement>(null);
-  const wasOriginalityOpen = useRef(originalityOpen);
+  const reportChipRefs = useRef<Partial<Record<ReportId, HTMLButtonElement | null>>>({});
+  const wasReportOpen = useRef(openReport);
   const [editedIds, setEditedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const refocusField = useRef(false);
+  const recorder = useVoiceRecorder({ busy, onRecording: onVoice, onActiveChange: onVoiceActive });
+  const voiceProblem = recorder.error || micError;
+  const voiceStage = composerVoiceStage({ recorder: recorder.phase, transcribing, error: voiceProblem, voiceAdded });
+  const covered = coversDraft(voiceStage);
+  const note = voiceNote({ stage: voiceStage, elapsed: recorder.elapsed, note: recorder.note });
+  const sendState = sendButtonState({
+    busy,
+    uploading: uploading !== null,
+    transcribing,
+    recording: recorder.phase !== "idle",
+    hasText: Boolean(input.trim()),
+  });
 
   useEffect(() => {
-    if (wasOriginalityOpen.current && !originalityOpen) {
-      const chip = originalityChipRef.current;
+    const closed = wasReportOpen.current;
+    if (closed && !openReport) {
+      const chip = reportChipRefs.current[closed];
       if (chip && !chip.disabled) chip.focus();
       else inputRef.current?.focus();
     }
-    wasOriginalityOpen.current = originalityOpen;
-  }, [originalityOpen]);
+    wasReportOpen.current = openReport;
+  }, [openReport]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll to the newest message when the log grows or a reply is pending.
   useEffect(() => {
@@ -402,6 +449,36 @@ export function ConversationPanel({
     }
   }
 
+  useEffect(() => {
+    if (covered || !refocusField.current) return;
+    refocusField.current = false;
+    inputRef.current?.focus();
+  }, [covered]);
+
+  function stopRunning() {
+    const targets = stopTargets({ busy, uploading: uploading !== null, transcribing });
+    if (targets.request) onStop();
+    if (targets.uploads) onStopUpload();
+    if (covered) refocusField.current = true;
+    else inputRef.current?.focus();
+  }
+
+  function onSendClick(event: MouseEvent<HTMLButtonElement>) {
+    const action = sendClickAction(sendState.mode, event.detail);
+    if (action === "send") onSend();
+    else if (action === "stop") stopRunning();
+  }
+
+  function retryRecording() {
+    onClearMicError();
+    recorder.start();
+  }
+
+  function dismissVoiceProblem() {
+    onClearMicError();
+    recorder.clearError();
+  }
+
   function onPickFile(event: ChangeEvent<HTMLInputElement>) {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = "";
@@ -413,6 +490,7 @@ export function ConversationPanel({
   const latestAgent = latestAgentMessage(session.messages);
   const optionsMessageId =
     discovery && session.pendingQuestion && !busy && latestAgent?.options?.length ? latestAgent.id : null;
+  const reportActions = REPORT_ACTIONS.filter((action) => showReportAction(action.id, session));
 
   function saveAnswer(messageId: string, text: string): boolean {
     const saved = onEditAnswer(messageId, text);
@@ -421,7 +499,7 @@ export function ConversationPanel({
   }
 
   return (
-    <section className="conversation-panel panel" aria-label="AI conversation" hidden={originalityOpen}>
+    <section className="conversation-panel panel" aria-label="AI conversation" hidden={openReport !== null}>
       <div className="studio-chat-head">
         <div className="studio-chat-head-main">
           <h3>Creative director</h3>
@@ -454,7 +532,7 @@ export function ConversationPanel({
         {session.messages.length === 0 ? (
           showEmptyRetry ? (
             <div className="chat-empty">
-              <p className="muted">The creative director couldn’t open the conversation.</p>
+              {!stopNotice && <p className="muted">The creative director couldn’t open the conversation.</p>}
               <button className="button secondary" type="button" onClick={onRetry}>
                 Start the conversation
               </button>
@@ -541,6 +619,9 @@ export function ConversationPanel({
           {error}
         </p>
       )}
+      <p className="muted chat-stopped" role="status">
+        {error ? "" : stopNotice}
+      </p>
 
       <div className="chat-compose">
         {discovery && (
@@ -562,46 +643,94 @@ export function ConversationPanel({
           </fieldset>
         )}
         {!discovery && (
-          <fieldset className="quick-actions">
+          <fieldset className="quick-actions quick-actions-refine">
             <legend className="sr-only">Ask a film expert</legend>
-            {QUICK_ACTIONS.map((action) => (
-              <button
-                key={action.label}
-                className="quick-action"
-                type="button"
-                title={action.message}
-                disabled={busy || transcribing || uploading !== null}
-                onClick={() => onQuickAction(action.message)}
-              >
-                {action.label}
-              </button>
-            ))}
-            {showOriginalityAction(session) && (
-              <button
-                ref={originalityChipRef}
-                className="quick-action quick-action-originality"
-                type="button"
-                title={ORIGINALITY_ACTION.tooltip}
-                onClick={onOpenOriginality}
-              >
-                {ORIGINALITY_ACTION.label}
-              </button>
-            )}
+            <div className="refine-actions">
+              <div className="refine-actions-group">
+                <button
+                  className="quick-action refine-action"
+                  type="button"
+                  title={FULL_REVIEW_ACTION.message}
+                  disabled={busy || transcribing || uploading !== null}
+                  onClick={() => onQuickAction(FULL_REVIEW_ACTION.message)}
+                >
+                  <span className="quick-action-icon" aria-hidden="true">
+                    ✦
+                  </span>
+                  {FULL_REVIEW_ACTION.label}
+                </button>
+                <ActionMenu
+                  label={EXPERT_MENU_LABEL}
+                  items={EXPERT_ACTIONS}
+                  disabled={busy || transcribing || uploading !== null}
+                  onSelect={(action) => onQuickAction(action.message)}
+                />
+              </div>
+              {reportActions.length > 0 && (
+                <div className="refine-actions-group refine-actions-reports">
+                  {reportActions.map((action) => (
+                    <button
+                      key={action.id}
+                      ref={(element) => {
+                        reportChipRefs.current[action.id] = element;
+                      }}
+                      className={`quick-action refine-action quick-action-${action.id}`}
+                      type="button"
+                      aria-label={reportName(action)}
+                      aria-describedby={`report-tip-${action.id}`}
+                      title={reportTitle(action)}
+                      onClick={() => onOpenReport(action.id)}
+                    >
+                      <span className="quick-action-icon" aria-hidden="true">
+                        {REPORT_ICONS[action.id]}
+                      </span>
+                      {action.shortLabel}
+                      <span id={`report-tip-${action.id}`} hidden>
+                        {action.tooltip}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           </fieldset>
         )}
         <label className="sr-only" htmlFor="conversation-input">
           Message the creative director
         </label>
-        <textarea
-          id="conversation-input"
-          ref={inputRef}
-          rows={3}
-          value={input}
-          maxLength={discovery ? MAX_ANSWER_CHARACTERS : MAX_CHAT_MESSAGE_CHARACTERS}
-          placeholder={session.phase === "discovery" ? "Type your answer…" : "Describe the change you want…"}
-          onChange={(event) => onInput(event.target.value)}
-          onKeyDown={onKeyDown}
-        />
+        <div className={covered ? "composer-field is-covered" : "composer-field"}>
+          <textarea
+            id="conversation-input"
+            ref={inputRef}
+            rows={3}
+            value={input}
+            maxLength={discovery ? MAX_ANSWER_CHARACTERS : MAX_CHAT_MESSAGE_CHARACTERS}
+            placeholder={session.phase === "discovery" ? "Type your answer…" : "Describe the change you want…"}
+            onChange={(event) => onInput(event.target.value)}
+            onKeyDown={onKeyDown}
+          />
+          {voiceStage === "done" && <span key={voiceAdded} className="composer-flash" aria-hidden="true" />}
+          {voiceStage === "recording" && <RecordingPanel recorder={recorder} />}
+          {voiceStage === "transcribing" && <TranscribingPanel />}
+        </div>
+        {voiceStage === "error" && (
+          <VoiceProblem message={voiceProblem} busy={busy} onRetry={retryRecording} onDismiss={dismissVoiceProblem} />
+        )}
+        <p className={covered || voiceStage === "done" ? "muted composer-note is-reserved" : "muted composer-note"} role="status">
+          {note.text &&
+            (note.srOnly ? (
+              <span className="sr-only">{note.text}</span>
+            ) : (
+              <>
+                {voiceStage === "done" && (
+                  <span className="composer-note-check" aria-hidden="true">
+                    ✓{" "}
+                  </span>
+                )}
+                {note.text}
+              </>
+            ))}
+        </p>
         <div className="chat-compose-actions">
           <div className="composer-tools">
             <input
@@ -616,33 +745,31 @@ export function ConversationPanel({
               type="button"
               aria-label={ATTACH_LABEL}
               title={ATTACH_LABEL}
-              disabled={busy || transcribing || uploading !== null}
+              disabled={busy || transcribing || uploading !== null || recorder.phase !== "idle"}
               onClick={() => fileRef.current?.click()}
             >
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                 <path d="M21.44 11.05 12.25 20.24a5 5 0 0 1-7.07-7.07l9.19-9.19a3 3 0 0 1 4.24 4.24l-9.2 9.19a1 1 0 0 1-1.41-1.41l8.49-8.49" />
               </svg>
             </button>
-            <VoiceRecorder busy={busy} onActiveChange={onVoiceActive} onRecording={onVoice} />
+            <MicButton recorder={recorder} busy={busy} />
           </div>
           <button
-            className="button"
+            className="button composer-send"
             type="button"
-            disabled={busy || transcribing || uploading !== null || !input.trim()}
-            onClick={onSend}
+            aria-label={sendState.mode === "stop" ? sendState.ariaLabel : undefined}
+            disabled={sendState.disabled}
+            onClick={onSendClick}
           >
-            Send
+            {sendState.label}
           </button>
         </div>
         {uploading && (
-          <p className="muted" role="status">
-            {UPLOADING_LABELS[uploading]}
-          </p>
-        )}
-        {transcribing && (
-          <p className="muted" role="status">
-            Transcribing voice note…
-          </p>
+          <div className="stop-row">
+            <p className="muted" role="status">
+              {UPLOADING_LABELS[uploading]}
+            </p>
+          </div>
         )}
         {voiceError && (
           <p className="error" role="alert">

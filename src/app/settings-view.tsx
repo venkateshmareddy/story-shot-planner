@@ -1,7 +1,6 @@
 "use client";
 
 import { enabledFormats, FORMAT_REGISTRY, getFormatProfile } from "@/lib/formats";
-import { STORY_MODEL, TRANSCRIPTION_MODEL } from "@/lib/models";
 
 export function PreferencesSection({
   budget,
@@ -59,13 +58,8 @@ export function PreferencesSection({
       <div className="settings-card">
         <h3 className="editor-section-head">Models</h3>
         <p className="muted">
-          Planning &amp; refinement: <code>{STORY_MODEL}</code>
-          <br />
-          Voice transcription: <code>{TRANSCRIPTION_MODEL}</code>
-        </p>
-        <p className="muted">
-          The API key is configured on the server and is never exposed to the browser. There is nothing to configure
-          here.
+          See which AI models answer your requests, test them and choose others under <strong>Models</strong> in this
+          menu. API keys stay on the server and are never shown in the browser.
         </p>
       </div>
     </section>

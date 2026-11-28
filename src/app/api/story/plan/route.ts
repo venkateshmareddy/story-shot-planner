@@ -2,6 +2,7 @@ import type { z } from "zod";
 import { DEFAULT_FORMAT } from "@/lib/formats";
 import { isStopRequest, MAX_INTERVIEW_TURNS, interviewTurnOutput, resolveInterviewTurn, stopTurn } from "@/lib/interview";
 import { interviewInput } from "@/lib/server/memory-view";
+import { resolveStoryModel } from "@/lib/server/model-catalog";
 import { createModelCaller, getOpenAI, jsonError, ModelOutputError, modelError } from "@/lib/server/openai";
 import { PlanGenerationError, runPlan } from "@/lib/server/plan-generation";
 import { composeInstructions } from "@/lib/server/prompts";
@@ -46,7 +47,7 @@ export async function POST(request: Request) {
   if (!client) return jsonError("Add OPENAI_API_KEY to the server’s .env file to use AI planning.", 503);
 
   const format = input.format ?? DEFAULT_FORMAT;
-  const callModel = createModelCaller(client);
+  const callModel = createModelCaller(client, resolveStoryModel(request));
   const generate = async <T extends z.ZodType>(
     step: "draft" | "interview",
     schema: T,

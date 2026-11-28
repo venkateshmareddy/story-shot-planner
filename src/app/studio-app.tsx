@@ -3,7 +3,9 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ExportMenu } from "@/app/export-menu";
 import { ConversationPanel, type UploadingKind } from "./conversation-panel";
+import { EngagementPanel } from "./engagement-report";
 import { OriginalityPanel } from "./originality-report";
+import { ReportConfirmDialog } from "./report-confirm-dialog";
 import { SettingsScreen, type SettingsSection } from "./settings-screen";
 import { Sidebar } from "./sidebar";
 import { StoryEditor } from "./story-editor";
@@ -12,10 +14,21 @@ import { validateAudioFile } from "@/lib/audio";
 import { buildDecisionHistory } from "@/lib/decisions";
 import { conceptProjectTitle, conceptSource, seedContextFromConcept, type StoryConcept } from "@/lib/ideas";
 import { sessionFromConcept } from "@/lib/ideas-flow";
+import { addVisualLook } from "@/lib/look-and-feel";
+import type { EngagementRecommendation, RecommendationAction } from "@/lib/engagement";
+import { recommendationRequest } from "@/lib/engagement-ui";
 import { addExtraDirection } from "@/lib/interview";
 import type { OriginalityFinding } from "@/lib/originality";
 import { type FindingAction, findingActionMessage } from "@/lib/originality-ui";
-import { answerFor, showOriginalityAction } from "@/lib/quick-actions";
+import {
+  answerFor,
+  type ReportId,
+  showEngagementAction,
+  showOriginalityAction,
+  showReportAction,
+} from "@/lib/quick-actions";
+import { REPORT_CONFIRM_COPY, reportEntry, runConfirmedReport } from "@/lib/report-confirm";
+import { rollbackTurn, STOPPED_IMPORT_MESSAGE, STOPPED_MESSAGE, stoppedNotice } from "@/lib/request-stop";
 import { MAX_SESSION_TITLE, newId, planSignature, type ChatMessage, type StorySession } from "@/lib/session";
 import { checkSourceText, needsDigest, type SourceKind, type StorySource, storyForStep } from "@/lib/source-text";
 import {
@@ -34,6 +47,7 @@ import {
   analyzeImage,
   askDirector,
   askInterview,
+  checkEngagement,
   checkOriginality,
   createDigest,
   directorCollected,
@@ -45,14 +59,26 @@ import {
   transcribeVoice,
   withDismissedFinding,
   withEditedAnswer,
+  withEngagementReport,
   withOriginalityReport,
   withRestoredFinding,
   withSessionContext,
 } from "@/lib/studio-agent";
-import { classifyUpload, documentExtensionOf, routeLongText, sourceNote, tooLongForChatMessage } from "@/lib/upload";
+import { transcribeHintFor } from "@/lib/transcription";
+import {
+  appendToDraft,
+  classifyUpload,
+  documentExtensionOf,
+  routeLongText,
+  sourceNote,
+  tooLongForChatMessage,
+} from "@/lib/upload";
 import { useSessions } from "@/lib/use-sessions";
 import { useTokenBudget } from "@/lib/use-token-budget";
 import type { UsageRecord } from "@/lib/usage";
+import { voiceAddedAfter } from "@/lib/voice-ui";
+
+const COMPOSER_FIELD_ID = "conversation-input";
 
 export function StudioApp() {
   const store = useSessions();
@@ -71,29 +97,77 @@ export function StudioApp() {
   const [uploading, setUploading] = useState<UploadingKind | null>(null);
   const [busyNote, setBusyNote] = useState<{ id: string; text: string } | null>(null);
   const [voiceError, setVoiceError] = useState("");
+  const [micError, setMicError] = useState("");
+  const [voiceAdded, setVoiceAdded] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [originalityOpen, setOriginalityOpen] = useState(false);
+  const [openReport, setOpenReport] = useState<ReportId | null>(null);
+  const [confirmReport, setConfirmReport] = useState<ReportId | null>(null);
+  const [wikipediaLookup, setWikipediaLookup] = useState(true);
   const [originalityRun, setOriginalityRun] = useState<{ id: string; references: boolean } | null>(null);
   const [originalityError, setOriginalityError] = useState<{ id: string; text: string } | null>(null);
+  const [engagementRunId, setEngagementRunId] = useState<string | null>(null);
+  const [engagementError, setEngagementError] = useState<{ id: string; text: string } | null>(null);
+  const [stopNotice, setStopNotice] = useState<{ id: string; text: string; report?: ReportId } | null>(null);
   const activeIdRef = useRef<string | null>(store.activeId);
   const sessionsRef = useRef<StorySession[]>(store.sessions);
+  const inputValueRef = useRef(input);
   const requestIdRef = useRef(0);
+  const requestControllersRef = useRef(new Map<number, AbortController>());
+  const uploadControllersRef = useRef(new Set<AbortController>());
   const exploreButtonRef = useRef<HTMLButtonElement>(null);
   const refocusExploreRef = useRef(false);
+  const micTranscriptionsRef = useRef(0);
+  const [composerFocus, setComposerFocus] = useState(0);
   const busy = busySessionId === store.activeId;
 
   activeIdRef.current = store.activeId;
   sessionsRef.current = store.sessions;
+  inputValueRef.current = input;
 
   function beginRequest(id: string) {
     const requestId = ++requestIdRef.current;
+    const controller = new AbortController();
+    requestControllersRef.current.set(requestId, controller);
     setBusySessionId(id);
+    setStopNotice(null);
     if (activeIdRef.current === id) setError("");
-    return requestId;
+    return { requestId, signal: controller.signal };
   }
 
   function finishRequest(requestId: number) {
+    requestControllersRef.current.delete(requestId);
     if (requestId === requestIdRef.current) setBusySessionId(null);
+  }
+
+  function stopRequest() {
+    requestControllersRef.current.get(requestIdRef.current)?.abort();
+  }
+
+  function beginUpload() {
+    const controller = new AbortController();
+    uploadControllersRef.current.add(controller);
+    setStopNotice(null);
+    return controller;
+  }
+
+  function finishUpload(controller: AbortController) {
+    uploadControllersRef.current.delete(controller);
+  }
+
+  function stopUploads() {
+    for (const controller of uploadControllersRef.current) controller.abort();
+  }
+
+  function showStopped(id: string, text: string, report?: ReportId) {
+    setStopNotice(report ? { id, text, report } : { id, text });
+  }
+
+  /** Only refills an empty composer; true when it did. */
+  function restoreDraft(id: string, draft: string): boolean {
+    if (!draft || !isActiveRequestSession(id)) return false;
+    const restored = !inputValueRef.current;
+    setInput((previous) => previous || draft);
+    return restored;
   }
 
   function isActiveRequestSession(id: string) {
@@ -126,8 +200,21 @@ export function StudioApp() {
     setInput("");
     setError("");
     setVoiceError("");
-    setOriginalityOpen(false);
+    setMicError("");
+    setVoiceAdded((count) => voiceAddedAfter(count, "session"));
+    setOpenReport(null);
+    setConfirmReport(null);
+    setStopNotice(null);
   }, [store.activeId]);
+
+  useEffect(() => {
+    if (!composerFocus) return;
+    const field = document.getElementById(COMPOSER_FIELD_ID);
+    if (!(field instanceof HTMLTextAreaElement)) return;
+    field.focus();
+    field.setSelectionRange(field.value.length, field.value.length);
+    field.scrollTop = field.scrollHeight;
+  }, [composerFocus]);
 
   const recordUsage = useCallback(
     (id: string, usage?: UsageRecord | UsageRecord[]) => {
@@ -189,11 +276,12 @@ export function StudioApp() {
       if (isActiveRequestSession(id)) setError(story.error);
       return;
     }
-    const requestId = beginRequest(id);
-    const result = await askInterview(story.story, [], context);
+    const { requestId, signal } = beginRequest(id);
+    const result = await askInterview(story.story, [], context, { signal });
     finishRequest(requestId);
     if (!result.ok) {
-      if (isActiveRequestSession(id)) setError(result.error);
+      if (result.stopped) showStopped(id, STOPPED_MESSAGE);
+      else if (isActiveRequestSession(id)) setError(result.error);
       return;
     }
     applyInterviewTurn(id, result);
@@ -272,19 +360,21 @@ export function StudioApp() {
       pendingQuestion: null,
     }));
     if (fromComposer) setInput("");
-    const requestId = beginRequest(session.id);
+    const { requestId, signal } = beginRequest(session.id);
 
-    const result = await askInterview(story.story, nextAnswered, session.context);
+    const result = await askInterview(story.story, nextAnswered, session.context, { signal });
     finishRequest(requestId);
     if (!result.ok) {
-      store.update(session.id, (current) => ({
-        ...current,
-        messages: current.messages.filter((message) => message.id !== userMessage.id),
-        answered: session.answered,
-        pendingQuestion: session.pendingQuestion,
-      }));
-      if (fromComposer && isActiveRequestSession(session.id)) setInput((previous) => previous || text);
-      if (isActiveRequestSession(session.id)) setError(result.error);
+      store.update(session.id, (current) =>
+        rollbackTurn(current, {
+          messageId: userMessage.id,
+          answered: session.answered,
+          pendingQuestion: session.pendingQuestion,
+        }),
+      );
+      const restored = restoreDraft(session.id, fromComposer ? text : "");
+      if (result.stopped) showStopped(session.id, stoppedNotice(restored));
+      else if (isActiveRequestSession(session.id)) setError(result.error);
       return;
     }
     applyInterviewTurn(session.id, result);
@@ -299,28 +389,29 @@ export function StudioApp() {
       .map((message) => ({ role: message.role, text: message.text }));
     store.update(session.id, (current) => ({ ...current, messages: [...current.messages, userMessage] }));
     if (fromComposer) setInput("");
-    const requestId = beginRequest(session.id);
+    const { requestId, signal } = beginRequest(session.id);
 
-    const result = await askDirector({
-      plan: session.plan,
-      messages: history,
-      message: text,
-      answers: session.answered,
-      collected: directorCollected(session.context, session.collected),
-      references: session.references?.length ? session.references : undefined,
-      context: session.context,
-      decisions: buildDecisionHistory(session.messages),
-      source: directorSource(session.title, session.source),
-      intent,
-    });
+    const result = await askDirector(
+      {
+        plan: session.plan,
+        messages: history,
+        message: text,
+        answers: session.answered,
+        collected: directorCollected(session.context, session.collected),
+        references: session.references?.length ? session.references : undefined,
+        context: session.context,
+        decisions: buildDecisionHistory(session.messages),
+        source: directorSource(session.title, session.source),
+        intent,
+      },
+      { signal },
+    );
     finishRequest(requestId);
     if (!result.ok) {
-      store.update(session.id, (current) => ({
-        ...current,
-        messages: current.messages.filter((message) => message.id !== userMessage.id),
-      }));
-      if (fromComposer && isActiveRequestSession(session.id)) setInput((previous) => previous || text);
-      if (isActiveRequestSession(session.id)) setError(result.error);
+      store.update(session.id, (current) => rollbackTurn(current, { messageId: userMessage.id }));
+      const restored = restoreDraft(session.id, fromComposer ? text : "");
+      if (result.stopped) showStopped(session.id, stoppedNotice(restored));
+      else if (isActiveRequestSession(session.id)) setError(result.error);
       return;
     }
     const { response } = result;
@@ -354,6 +445,7 @@ export function StudioApp() {
       );
       return;
     }
+    setVoiceAdded((count) => voiceAddedAfter(count, "send"));
     if (active.phase === "discovery") void sendDiscovery(active, text);
     else void sendRefine(active, text);
   }
@@ -378,37 +470,97 @@ export function StudioApp() {
     const session = active;
     const plan = active.plan;
     setOriginalityError((current) => (current?.id === session.id ? null : current));
-    const requestId = beginRequest(session.id);
+    setWikipediaLookup(references);
+    const { requestId, signal } = beginRequest(session.id);
     setOriginalityRun({ id: session.id, references });
     setBusyNote({ id: session.id, text: "Checking your story’s originality…" });
-    const result = await checkOriginality({
-      title: session.title,
-      plan,
-      context: session.context,
-      source: directorSource(session.title, session.source),
-      dismissed: session.originality?.dismissed,
-      references,
-    });
+    const result = await checkOriginality(
+      {
+        title: session.title,
+        plan,
+        context: session.context,
+        source: directorSource(session.title, session.source),
+        dismissed: session.originality?.dismissed,
+        references,
+      },
+      Date.now(),
+      { signal },
+    );
     clearBusyNote(session.id);
     setOriginalityRun((current) => (current?.id === session.id ? null : current));
     finishRequest(requestId);
     if (!result.ok) {
-      setOriginalityError({ id: session.id, text: result.error });
+      if (result.stopped) showStopped(session.id, STOPPED_MESSAGE, "originality");
+      else setOriginalityError({ id: session.id, text: result.error });
       return;
     }
     store.update(session.id, (current) => withOriginalityReport(current, result.report));
     recordUsage(session.id, result.usage);
   }
 
-  function openOriginality() {
-    if (!active || !showOriginalityAction(active)) return;
-    setOriginalityOpen(true);
+  function openReportPanel(id: ReportId) {
+    if (!active || !showReportAction(id, active)) return;
+    const running = id === "originality" ? originalityRun?.id === active.id : engagementRunId === active.id;
+    if (reportEntry(id, active, running) === "confirm") {
+      setConfirmReport(id);
+      return;
+    }
+    setStopNotice(null);
+    setOpenReport(id);
+  }
+
+  function acceptReport(id: ReportId, references: boolean) {
+    setConfirmReport(null);
+    if (!active || !showReportAction(id, active)) return;
+    setStopNotice(null);
+    setOpenReport(id);
+    runConfirmedReport(id, references, {
+      originality: (value) => void runOriginalityCheck(value),
+      engagement: () => void runEngagementAnalysis(),
+    });
   }
 
   function sendFindingAction(action: FindingAction, finding: OriginalityFinding) {
     if (!active || busy || transcribing || uploading || active.phase !== "refining") return;
-    setOriginalityOpen(false);
+    setOpenReport(null);
     void sendRefine(active, findingActionMessage(action, finding), false, action === "revise" ? "edit" : undefined);
+  }
+
+  async function runEngagementAnalysis() {
+    if (!active?.plan || busy || transcribing || uploading) return;
+    const session = active;
+    const plan = active.plan;
+    setEngagementError((current) => (current?.id === session.id ? null : current));
+    const { requestId, signal } = beginRequest(session.id);
+    setEngagementRunId(session.id);
+    setBusyNote({ id: session.id, text: "Analysing your story scene by scene…" });
+    const result = await checkEngagement(
+      {
+        title: session.title,
+        plan,
+        context: session.context,
+        source: directorSource(session.title, session.source),
+      },
+      Date.now(),
+      { signal },
+    );
+    clearBusyNote(session.id);
+    setEngagementRunId((current) => (current === session.id ? null : current));
+    finishRequest(requestId);
+    if (!result.ok) {
+      if (result.stopped) showStopped(session.id, STOPPED_MESSAGE, "engagement");
+      else setEngagementError({ id: session.id, text: result.error });
+      return;
+    }
+    store.update(session.id, (current) => withEngagementReport(current, result.report));
+    recordUsage(session.id, result.usage);
+  }
+
+  function sendRecommendationAction(action: RecommendationAction, recommendation: EngagementRecommendation) {
+    if (!active || busy || transcribing || uploading || active.phase !== "refining") return;
+    const request = recommendationRequest(action, recommendation, active.engagement?.report.scenes);
+    setOpenReport(null);
+    void sendRefine(active, request.message, false, request.intent);
   }
 
   function dismissFinding(finding: OriginalityFinding) {
@@ -427,27 +579,26 @@ export function StudioApp() {
     draft = "",
     previousAnswered?: StorySession["answered"],
   ) {
-    const fail = (message: string) => {
+    const fail = ({ error: message, stopped }: { error: string; stopped?: true }) => {
       if (trigger || previousAnswered) {
-        store.update(session.id, (current) => ({
-          ...current,
-          messages: trigger ? current.messages.filter((item) => item.id !== trigger.id) : current.messages,
-          ...(previousAnswered ? { answered: previousAnswered } : {}),
-        }));
+        store.update(session.id, (current) =>
+          rollbackTurn(current, { messageId: trigger?.id, answered: previousAnswered }),
+        );
       }
-      if (draft && isActiveRequestSession(session.id)) setInput((previous) => previous || draft);
-      if (isActiveRequestSession(session.id)) setError(message);
+      const restored = restoreDraft(session.id, draft);
+      if (stopped) showStopped(session.id, stoppedNotice(restored));
+      else if (isActiveRequestSession(session.id)) setError(message);
     };
     const story = storyForStep(session.title, session.source, "plan");
     if (!story.ok) {
-      fail(story.error);
+      fail(story);
       return;
     }
-    const requestId = beginRequest(session.id);
-    const result = await generatePlan(story.story, session.answered, session.collected, session.context);
+    const { requestId, signal } = beginRequest(session.id);
+    const result = await generatePlan(story.story, session.answered, session.collected, session.context, { signal });
     finishRequest(requestId);
     if (!result.ok) {
-      fail(result.error);
+      fail(result);
       return;
     }
     const message: ChatMessage = {
@@ -523,17 +674,24 @@ export function StudioApp() {
   }
 
   async function adoptSource(id: string, imported: StorySource) {
-    const replaced = sessionById(id)?.source?.name;
+    const previous = sessionById(id)?.source;
+    const replaced = previous?.name;
     let source = imported;
     let digestFailed = false;
-    const requestId = beginRequest(id);
+    const { requestId, signal } = beginRequest(id);
     store.update(id, (current) => ({ ...current, source }));
     if (needsDigest(source)) {
       setBusyNote({ id, text: "Making a condensed version of your long story…" });
-      const digest = await createDigest(source.name, source.text);
+      const digest = await createDigest(source.name, source.text, { signal });
       if (digest.ok) {
         source = { ...source, digest: digest.digest };
         recordUsage(id, digest.usage);
+      } else if (digest.stopped) {
+        store.update(id, (current) => ({ ...current, source: previous }));
+        clearBusyNote(id);
+        finishRequest(requestId);
+        showStopped(id, STOPPED_IMPORT_MESSAGE);
+        return;
       } else {
         digestFailed = true;
         if (isActiveRequestSession(id)) {
@@ -552,11 +710,12 @@ export function StudioApp() {
       return;
     }
     setBusyNote({ id, text: "Reading your story for what's still missing…" });
-    const result = await askInterview(story.story, session.answered, session.context);
+    const result = await askInterview(story.story, session.answered, session.context, { signal });
     clearBusyNote(id);
     finishRequest(requestId);
     if (!result.ok) {
-      if (isActiveRequestSession(id)) setError(result.error);
+      if (result.stopped) showStopped(id, STOPPED_MESSAGE);
+      else if (isActiveRequestSession(id)) setError(result.error);
       return;
     }
     applyInterviewTurn(id, result);
@@ -567,6 +726,7 @@ export function StudioApp() {
     text: string,
     origin: "document" | "transcript",
     meta: { name: string; kind: SourceKind; characters: number; pages?: number },
+    fromMic = false,
   ) {
     const session = sessionById(id);
     if (!session) return;
@@ -574,13 +734,14 @@ export function StudioApp() {
     const composerLimit = phase === "discovery" ? MAX_ANSWER_CHARACTERS : MAX_CHAT_MESSAGE_CHARACTERS;
     const route = routeLongText({ chars: meta.characters, origin, phase, composerLimit });
     if (route === "too-long-for-chat") {
-      if (isActiveRequestSession(id)) setVoiceError(tooLongForChatMessage(meta.characters));
+      if (isActiveRequestSession(id)) (fromMic ? setMicError : setVoiceError)(tooLongForChatMessage(meta.characters));
       return;
     }
     if (route === "composer") {
       if (!isActiveRequestSession(id)) return;
-      const separator = origin === "document" ? "\n\n" : " ";
-      setInput((current) => (current.trim() ? `${current.trim()}${separator}${text}` : text));
+      setInput((current) => appendToDraft(current, text, origin === "document" ? "\n\n" : " "));
+      if (origin === "transcript") setComposerFocus((count) => count + 1);
+      if (fromMic) setVoiceAdded((count) => voiceAddedAfter(count, "transcribed"));
       return;
     }
     await adoptSource(id, { ...meta, text });
@@ -589,27 +750,54 @@ export function StudioApp() {
   async function transcribeInto(file: File, name: string, mode: "mic" | "upload") {
     if (!active) return;
     const id = active.id;
-    if (mode === "mic") setTranscribing(true);
-    else setUploading("audio");
+    if (mode === "mic") {
+      micTranscriptionsRef.current += 1;
+      setTranscribing(true);
+      setMicError("");
+      setVoiceAdded((count) => voiceAddedAfter(count, "record"));
+    } else setUploading("audio");
     setVoiceError("");
-    const result = await transcribeVoice(file);
-    if (mode === "mic") setTranscribing(false);
-    else setUploading(null);
+    const controller = beginUpload();
+    const result = await transcribeVoice(file, { signal: controller.signal, hint: transcribeHintFor(active) });
+    finishUpload(controller);
+    if (mode === "mic") {
+      micTranscriptionsRef.current -= 1;
+      if (!micTranscriptionsRef.current) setTranscribing(false);
+    } else setUploading(null);
+    const fail = mode === "mic" ? setMicError : setVoiceError;
     if (!result.ok) {
-      if (isActiveRequestSession(id)) setVoiceError(result.error);
+      if (result.stopped) showStopped(id, STOPPED_MESSAGE);
+      else if (isActiveRequestSession(id)) fail(result.error);
       return;
     }
     recordUsage(id, result.usage);
     const checked = checkSourceText(result.text, `“${name}”`);
     if (!checked.ok) {
-      if (isActiveRequestSession(id)) setVoiceError(checked.error);
+      if (isActiveRequestSession(id)) fail(checked.error);
       return;
     }
-    await placeImportedText(id, checked.text, "transcript", { name, kind: "audio", characters: checked.text.length });
+    await placeImportedText(
+      id,
+      checked.text,
+      "transcript",
+      { name, kind: "audio", characters: checked.text.length },
+      mode === "mic",
+    );
   }
 
   function handleVoice(file: File) {
     void transcribeInto(file, "Voice note", "mic");
+  }
+
+  function handleVoiceActive(recording: boolean) {
+    if (!recording) return;
+    setMicError("");
+    setVoiceAdded((count) => voiceAddedAfter(count, "record"));
+  }
+
+  function editDraft(value: string) {
+    setInput(value);
+    setVoiceAdded((count) => voiceAddedAfter(count, "edit"));
   }
 
   async function handleImage(file: File) {
@@ -617,10 +805,13 @@ export function StudioApp() {
     const id = active.id;
     setUploading("image");
     setVoiceError("");
-    const result = await analyzeImage(file);
+    const controller = beginUpload();
+    const result = await analyzeImage(file, { signal: controller.signal });
+    finishUpload(controller);
     setUploading(null);
     if (!result.ok) {
-      setVoiceError(result.error);
+      if (result.stopped) showStopped(id, STOPPED_MESSAGE);
+      else setVoiceError(result.error);
       return;
     }
     const { reference, usage } = result;
@@ -656,10 +847,13 @@ export function StudioApp() {
     const id = active.id;
     setUploading("document");
     setVoiceError("");
-    const result = await importDocument(file);
+    const controller = beginUpload();
+    const result = await importDocument(file, { signal: controller.signal });
+    finishUpload(controller);
     setUploading(null);
     if (!result.ok) {
-      if (isActiveRequestSession(id)) setVoiceError(result.error);
+      if (result.stopped) showStopped(id, STOPPED_MESSAGE);
+      else if (isActiveRequestSession(id)) setVoiceError(result.error);
       return;
     }
     await placeImportedText(id, result.text, "document", {
@@ -813,16 +1007,21 @@ export function StudioApp() {
               input={input}
               transcribing={transcribing}
               voiceError={voiceError}
+              micError={micError}
+              voiceAdded={voiceAdded}
               canGeneratePlan={
                 active.phase === "discovery" &&
                 (active.answered.length >= 1 || contextReadiness(active.context ?? EMPTY_CONTEXT).ready)
               }
               uploading={uploading}
               busyText={busyNote?.id === active.id ? busyNote.text : undefined}
-              originalityOpen={originalityOpen && showOriginalityAction(active)}
-              onOpenOriginality={openOriginality}
-              onInput={setInput}
+              stopNotice={stopNotice?.id === active.id ? stopNotice.text : ""}
+              openReport={openReport !== null && showReportAction(openReport, active) ? openReport : null}
+              onOpenReport={openReportPanel}
+              onInput={editDraft}
               onSend={send}
+              onStop={stopRequest}
+              onStopUpload={stopUploads}
               onQuickAction={sendQuickAction}
               onDiscoveryAction={sendDiscoveryAction}
               onAnswerOption={sendAnswerOption}
@@ -831,23 +1030,42 @@ export function StudioApp() {
               onReject={rejectProposal}
               onEditAnswer={editAnswer}
               onVoice={handleVoice}
-              onVoiceActive={() => {}}
+              onVoiceActive={handleVoiceActive}
+              onClearMicError={() => setMicError("")}
               onUpload={handleUpload}
               onRetry={() => void openConversation(active.id, active.title, active.source, active.context)}
             />
-            {originalityOpen && showOriginalityAction(active) && (
+            {openReport === "originality" && showOriginalityAction(active) && (
               <OriginalityPanel
                 plan={active.plan}
                 context={active.context}
                 originality={active.originality}
+                defaultReferences={wikipediaLookup}
                 busy={busy || transcribing || uploading !== null}
                 running={originalityRun?.id === active.id ? { references: originalityRun.references } : null}
                 error={originalityError?.id === active.id ? originalityError.text : ""}
+                stopped={stopNotice?.id === active.id && stopNotice.report === "originality"}
                 onRun={(references) => void runOriginalityCheck(references)}
-                onClose={() => setOriginalityOpen(false)}
+                onStop={stopRequest}
+                onClose={() => setOpenReport(null)}
                 onAction={sendFindingAction}
                 onDismiss={dismissFinding}
                 onRestore={restoreFinding}
+              />
+            )}
+            {openReport === "engagement" && showEngagementAction(active) && (
+              <EngagementPanel
+                plan={active.plan}
+                context={active.context}
+                engagement={active.engagement}
+                busy={busy || transcribing || uploading !== null}
+                running={engagementRunId === active.id}
+                error={engagementError?.id === active.id ? engagementError.text : ""}
+                stopped={stopNotice?.id === active.id && stopNotice.report === "engagement"}
+                onRun={() => void runEngagementAnalysis()}
+                onStop={stopRequest}
+                onClose={() => setOpenReport(null)}
+                onAction={sendRecommendationAction}
               />
             )}
             <StoryEditor
@@ -857,7 +1075,18 @@ export function StudioApp() {
               onApproveFact={(key) => updateContext((context) => approveFact(context, key))}
               onRemoveFact={(key) => updateContext((context) => removeFact(context, key))}
               onEditFact={(key, value) => updateContext((context) => editFact(context, key, value))}
+              onAddLook={(entity, value) => updateContext((context) => addVisualLook(context, entity, value))}
             />
+            {confirmReport && showReportAction(confirmReport, active) && (
+              <ReportConfirmDialog
+                key={`${active.id}:${confirmReport}`}
+                copy={REPORT_CONFIRM_COPY[confirmReport]}
+                busy={busy || transcribing || uploading !== null}
+                option={wikipediaLookup}
+                onAccept={(references) => acceptReport(confirmReport, references)}
+                onClose={() => setConfirmReport(null)}
+              />
+            )}
           </div>
         ) : null}
       </main>

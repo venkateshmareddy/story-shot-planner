@@ -39,8 +39,11 @@ function mergePages(pages: string[]): string {
     .replace(/ ?\n ?/g, "\n");
 }
 
-/** Extracts the full text of a PDF, or explains in plain words why it can't. `label` names the file in messages. */
-export async function readPdfText(file: PdfFile, label: string): Promise<PdfText> {
+/**
+ * Extracts the full text of a PDF, or explains in plain words why it can't. `label` names the file in messages.
+ * An abort stops the parse; the caller checks the signal and ignores the result.
+ */
+export async function readPdfText(file: PdfFile, label: string, signal?: AbortSignal): Promise<PdfText> {
   if (file.size > MAX_PDF_FILE_BYTES) {
     return { ok: false, error: `${label} is larger than ${MAX_PDF_FILE_MB} MB. Split it and import one part at a time.` };
   }
@@ -56,12 +59,17 @@ export async function readPdfText(file: PdfFile, label: string): Promise<PdfText
     return { ok: false, error: `${label} doesn’t appear to be a PDF.` };
   }
 
+  const notRead: PdfText = { ok: false, error: `${label} wasn’t read.` };
   let pages: string[];
   let pageCount: number;
   try {
     const { extractText, getDocumentProxy } = await import("unpdf");
+    if (signal?.aborted) return notRead;
     const pdf = await getDocumentProxy(bytes);
+    const stop = () => void pdf.loadingTask.destroy();
+    signal?.addEventListener("abort", stop, { once: true });
     try {
+      if (signal?.aborted) return notRead;
       pageCount = pdf.numPages;
       if (pageCount > MAX_PDF_PAGES) {
         return {
@@ -71,6 +79,7 @@ export async function readPdfText(file: PdfFile, label: string): Promise<PdfText
       }
       pages = (await extractText(pdf, { mergePages: false })).text;
     } finally {
+      signal?.removeEventListener("abort", stop);
       await pdf.loadingTask.destroy();
     }
   } catch (error) {

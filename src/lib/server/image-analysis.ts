@@ -102,6 +102,7 @@ export async function analyseImage(
   image: Uint8Array,
   type: ImageType,
   name: string,
+  { signal }: { signal?: AbortSignal } = {},
 ): Promise<ImageAnalysisResponse> {
   const format = zodTextFormat(imageAnalysisOutput, "image_analysis");
   const response = await client.responses.parse(
@@ -111,12 +112,14 @@ export async function analyseImage(
       format,
       maxOutputTokens: IMAGE_ANALYSIS_MAX_OUTPUT_TOKENS,
     }),
+    { signal },
   );
-  const usage = toUsageRecord("image-analysis", STORY_MODEL, response.usage);
+  const model = response.model || STORY_MODEL;
+  const usage = toUsageRecord("image-analysis", model, response.usage);
   logModelUsage({
     step: "image-analysis",
     stage: "image-analysis",
-    model: STORY_MODEL,
+    model,
     usage,
     cacheWriteTokens: cacheWriteTokens(response.usage),
   });

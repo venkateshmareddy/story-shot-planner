@@ -1,8 +1,11 @@
 import { AUDIO_FORMATS, type AudioExtension, audioLabel, audioMatches } from "@/lib/audio";
-import { getOpenAI, jsonError, modelError, TRANSCRIPTION_MODEL } from "@/lib/server/openai";
+import { jsonError } from "@/lib/server/openai";
 import { readBody } from "@/lib/server/read-body";
+import { resolveVoiceModel } from "@/lib/server/model-catalog";
+import { createGeminiTranscriber, geminiConfigFromEnv } from "@/lib/server/transcription/gemini";
+import { transcriptionErrorResponse, transcriptionFailure } from "@/lib/server/transcription/provider";
 import { MAX_STORY_CHARACTERS, MAX_VOICE_BYTES } from "@/lib/story-input";
-import { toUsageRecord } from "@/lib/usage";
+import { decodeTranscribeHint, TRANSCRIBE_HINT_HEADER } from "@/lib/transcription";
 
 export const runtime = "nodejs";
 export const maxDuration = 100;
@@ -17,6 +20,11 @@ function declaredTypeMatches(extension: AudioExtension, header: string | null): 
   return !type || (AUDIO_FORMATS[extension] as readonly string[]).includes(type);
 }
 
+function failure(name: Parameters<typeof transcriptionFailure>[0]) {
+  const { message, status } = transcriptionFailure(name);
+  return jsonError(message, status);
+}
+
 export async function POST(request: Request) {
   const extension = extensionFrom(request.headers.get("x-audio-extension"));
   if (!extension) return jsonError("Choose an MP3, WAV, M4A, or WebM file.", 415);
@@ -24,6 +32,8 @@ export async function POST(request: Request) {
   if (!declaredTypeMatches(extension, request.headers.get("x-audio-type"))) {
     return jsonError(`This file's type doesn't match ${label} audio. Choose a real ${label} file.`, 415);
   }
+  const hint = decodeTranscribeHint(request.headers.get(TRANSCRIBE_HINT_HEADER));
+  if (!hint.ok) return jsonError(hint.error, 400);
 
   let audio: Uint8Array<ArrayBuffer>;
   try {
@@ -36,22 +46,16 @@ export async function POST(request: Request) {
   }
   if (!audioMatches(extension, audio)) return jsonError(`This file doesn't look like real ${label} audio.`, 415);
 
-  const client = getOpenAI();
-  if (!client) return jsonError("Add OPENAI_API_KEY to the server’s .env file to transcribe audio.", 503);
+  const config = geminiConfigFromEnv();
+  if (!config) return failure("not_configured");
+  const transcriber = createGeminiTranscriber({ ...config, model: resolveVoiceModel(request) });
 
   try {
-    const result = await client.audio.transcriptions.create({
-      model: TRANSCRIPTION_MODEL,
-      file: new File([audio], `voice-note.${extension}`, { type: AUDIO_FORMATS[extension][0] }),
-    });
-    const returned = (result as { model?: unknown }).model;
-    const model = typeof returned === "string" && returned ? returned : TRANSCRIPTION_MODEL;
-    const usage = toUsageRecord("transcribe", model, result.usage);
-    console.info("Model usage", { step: "transcribe", model, usage });
-    if (!result.text?.trim()) return jsonError("No speech was found in the voice note.", 422);
-    if (result.text.length > MAX_STORY_CHARACTERS) return jsonError("Use a shorter voice note.", 422);
-    return Response.json({ text: result.text, usage });
+    const { text, usage } = await transcriber.transcribe({ audio, format: extension, hint: hint.hint, signal: request.signal });
+    if (!text) return failure("no_speech");
+    if (text.length > MAX_STORY_CHARACTERS) return failure("too_long");
+    return Response.json({ text, usage });
   } catch (error) {
-    return modelError(error, "transcribe");
+    return transcriptionErrorResponse(error, { provider: transcriber.provider, model: transcriber.model });
   }
 }

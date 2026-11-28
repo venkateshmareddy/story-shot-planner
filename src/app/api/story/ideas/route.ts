@@ -1,6 +1,7 @@
 import type { IdeasResponse } from "@/lib/ideas";
 import { IDEAS_BODY_BYTES, IdeasError, ideasRequest, openAIIdeasModel, runIdeas } from "@/lib/server/ideas";
-import { getOpenAI, jsonError, modelError } from "@/lib/server/openai";
+import { resolveStoryModel } from "@/lib/server/model-catalog";
+import { getOpenAI, jsonError, modelError, pinStoryModel } from "@/lib/server/openai";
 import { readBody } from "@/lib/server/read-body";
 
 export const runtime = "nodejs";
@@ -23,7 +24,7 @@ export async function POST(request: Request) {
   if (!client) return jsonError("Add OPENAI_API_KEY to the server’s .env file to get story ideas.", 503);
 
   try {
-    const result: IdeasResponse = await runIdeas(parsed.data, openAIIdeasModel(client), { signal: request.signal });
+    const result: IdeasResponse = await runIdeas(parsed.data, openAIIdeasModel(pinStoryModel(client, resolveStoryModel(request))), { signal: request.signal });
     return Response.json(result);
   } catch (error) {
     if (error instanceof IdeasError) {

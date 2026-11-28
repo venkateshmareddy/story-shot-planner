@@ -23,6 +23,8 @@ function turn(facts: InterviewTurnOutput["facts"]): InterviewTurnOutput {
     rationale: "",
     recommendation: "",
     facts,
+    visuals: [],
+    asks: "",
     unresolved: [],
   };
 }

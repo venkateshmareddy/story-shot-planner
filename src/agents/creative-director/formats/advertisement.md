@@ -37,3 +37,11 @@ An advertisement is remembered by its central gag, twist and tagline: look harde
 ## originality_compare
 
 A shared central gag, twist or tagline matters most.
+
+## engagement_scene
+
+An advertisement is very short: judge each moment by how quickly it makes its point.
+
+## engagement_summary
+
+Judge the hook in the first seconds and the ending by how clearly it lands the message.

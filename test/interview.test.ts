@@ -23,6 +23,8 @@ function askMock(overrides: Partial<InterviewTurnOutput> = {}): InterviewTurnOut
     rationale: "A recurring motif ties the emotional beats together for the audience.",
     recommendation: "",
     facts: [{ category: "genre", label: "Tone", value: "Bittersweet ending", source: "user" }],
+    visuals: [],
+    asks: "",
     unresolved: [],
     ...overrides,
   };
@@ -37,6 +39,8 @@ function completeMock(overrides: Partial<InterviewTurnOutput> = {}): InterviewTu
     rationale: "",
     recommendation: "We have tone, motif and structure — proceed to planning.",
     facts: [{ category: "genre", label: "Tone", value: "Bittersweet ending", source: "user" }],
+    visuals: [],
+    asks: "",
     unresolved: [],
     ...overrides,
   };
@@ -130,7 +134,7 @@ test("short_film compatibility: instructions include turn-based base and short-f
     ),
   );
   assert.ok(instructions.toLowerCase().includes("exactly one"));
-  assert.ok(instructions.includes("Focus on the few decisions that most shape a short film."));
+  assert.ok(instructions.includes("Focus on the few decisions that most shape a short film, including how its main places and light look."));
 });
 
 test("tidyQuestion keeps only the first question of a numbered list", () => {

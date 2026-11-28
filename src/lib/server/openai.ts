@@ -47,10 +47,11 @@ export function modelRequest<Format, Input extends ModelInput>(
   stage: ModelStage | null,
   { instructions, input, format, maxOutputTokens }: ModelRequestParts<Format, Input>,
   cache: PromptCacheOptions = NO_PROMPT_CACHE,
+  model: string = STORY_MODEL,
 ): ModelRequest<Format, Input> {
   const verbosity = stageSettings(stage)?.verbosity;
   return {
-    model: STORY_MODEL,
+    model,
     store: false,
     instructions,
     input,
@@ -110,6 +111,19 @@ export type ModelCall = {
 };
 
 export type PrewarmCall = Omit<ModelCall, "input" | "cachedPrefix"> & { cachedPrefix: string };
+
+type ResponsesClient = Pick<OpenAI, "responses">;
+
+/** For helpers that build their own request: every `responses.parse` they make asks for `model` instead. */
+export function pinStoryModel(client: ResponsesClient, model: string): ResponsesClient {
+  if (model === STORY_MODEL) return client;
+  const { responses } = client;
+  type Parse = ResponsesClient["responses"]["parse"];
+  const parse = ((body: Parameters<Parse>[0], options?: Parameters<Parse>[1]) =>
+    responses.parse({ ...body, model }, options)) as Parse;
+  const pinned: ResponsesClient["responses"] = Object.create(responses);
+  return { responses: Object.assign(pinned, { parse }) };
+}
 
 /** Output is treated as unknown and re-validated by the caller. */
 export type CallModel = {
@@ -190,13 +204,13 @@ export function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promi
 const stageOf = (call: Pick<ModelCall, "step" | "stage">) => call.stage ?? stageForStep(call.step);
 
 /** The one structured-output call path: real usage recorded, one metadata-only log line per call. */
-export function createModelCaller(client: OpenAI): CallModel {
+export function createModelCaller(client: Pick<OpenAI, "responses">, model: string = STORY_MODEL): CallModel {
   const send = (call: ModelCall | PrewarmCall, input: ModelInput, cache: PromptCacheOptions) => {
     const { step, schema, signal, timeoutMs } = call;
     const format = zodTextFormat(schema, step);
     const { instructions, maxOutputTokens } = call;
     return client.responses.parse(
-      modelRequest(stageOf(call), { instructions, input, format, maxOutputTokens }, cache),
+      modelRequest(stageOf(call), { instructions, input, format, maxOutputTokens }, cache, model),
       timeoutMs ? { signal, timeout: timeoutMs } : { signal },
     );
   };
@@ -206,13 +220,13 @@ export function createModelCaller(client: OpenAI): CallModel {
     const response = await (cachedPrefix
       ? send(call, prefixedInput(cachedPrefix, input), PREFIX_CACHE)
       : send(call, input, NO_PROMPT_CACHE));
-    const model = response.model || STORY_MODEL;
-    const usage = toUsageRecord(step, model, response.usage);
+    const answeredBy = response.model || model;
+    const usage = toUsageRecord(step, answeredBy, response.usage);
     const reason = unusableReason(response);
     logModelUsage({
       step,
       stage: stageOf(call),
-      model,
+      model: answeredBy,
       usage,
       cacheWriteTokens: cacheWriteTokens(response.usage),
       ms: Date.now() - started,
@@ -224,14 +238,14 @@ export function createModelCaller(client: OpenAI): CallModel {
   callModel.prewarm = async (call) => {
     const started = Date.now();
     const response = await send(call, prefixedInput(call.cachedPrefix), { ...PREFIX_CACHE, prewarm: true });
-    const model = response.model || STORY_MODEL;
-    const usage = toUsageRecord(call.step, model, response.usage);
+    const answeredBy = response.model || model;
+    const usage = toUsageRecord(call.step, answeredBy, response.usage);
     const written = cacheWriteTokens(response.usage);
     const reason = written || usage.cachedTokens ? null : "no_cache_write";
     logModelUsage({
       step: call.step,
       stage: stageOf(call),
-      model,
+      model: answeredBy,
       usage,
       cacheWriteTokens: written,
       ms: Date.now() - started,

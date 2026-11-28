@@ -15,9 +15,6 @@ import type { ShotPlan } from "@/lib/story-planning";
 
 export const ORIGINALITY_COPY = {
   panelTitle: "Story originality",
-  intro:
-    "This check reads your plan and points out parts that may be close to existing films, books or shows. It also lists familiar story ideas that many films share, which are fine to use.",
-  introSafe: "Nothing in your story changes. You decide what to do with each finding.",
   referencesLabel: "Also look for similar published works on Wikipedia",
   referencesDisclosure:
     "Only the titles of possibly similar works are sent to Wikipedia, never your story. Your story itself is checked by the same AI service the app already uses.",
@@ -29,6 +26,7 @@ export const ORIGINALITY_COPY = {
   finished: "Check complete. The report is below.",
   close: "Close",
   outOfDate: "Out of date — your story changed since this check",
+  staleEdit: "Re-check first: your story changed since this check, so these story parts may have moved.",
   overall: "Overall",
   coverageHeading: "What was checked",
   checked: "checked",
@@ -146,12 +144,16 @@ export const DIMENSION_FACT_CATEGORIES: Record<OriginalityDimension, readonly St
   structure: ["structure"],
 };
 
-/** Facts the filmmaker said or approved in the categories a revision of this dimension may touch. */
-export function decidedFactsFor(context: StoryContext | undefined, dimension: OriginalityDimension): ContextFact[] {
-  const categories: readonly StoryCategoryId[] = DIMENSION_FACT_CATEGORIES[dimension];
+/** Facts the filmmaker said or approved in the given categories. */
+export function decidedFactsIn(context: StoryContext | undefined, categories: readonly StoryCategoryId[]): ContextFact[] {
   return (context?.facts ?? []).filter(
     (fact) => categories.includes(fact.category) && (fact.approved || fact.source === "user"),
   );
+}
+
+/** Facts the filmmaker said or approved in the categories a revision of this dimension may touch. */
+export function decidedFactsFor(context: StoryContext | undefined, dimension: OriginalityDimension): ContextFact[] {
+  return decidedFactsIn(context, DIMENSION_FACT_CATEGORIES[dimension]);
 }
 
 export const FINDING_ACTIONS = ["discuss", "alternatives", "revise"] as const;

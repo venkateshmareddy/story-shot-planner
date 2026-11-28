@@ -53,3 +53,13 @@ export function audioMatches(extension: AudioExtension, bytes: Uint8Array): bool
 export function audioLabel(extension: AudioExtension): string {
   return LABEL[extension];
 }
+
+/** A 16 kHz mono WAV of this length stays under MAX_VOICE_BYTES (32 KB a second). */
+export const MAX_RECORDING_SECONDS = 120;
+
+export function formatRecordingTime(seconds: number): string {
+  const whole = Number.isFinite(seconds) ? Math.max(0, Math.floor(seconds)) : 0;
+  return `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
+}
+
+export const RECORDING_CAP_NOTE = `Recording stopped at ${formatRecordingTime(MAX_RECORDING_SECONDS)}, the longest a voice note can be.`;

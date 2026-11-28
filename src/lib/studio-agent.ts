@@ -7,6 +7,7 @@ import {
   SPECIALIST_LABELS,
   type SpecialistId,
 } from "@/lib/agents/types";
+import { type EngagementReport, type EngagementRequest, engagementReportSchema } from "@/lib/engagement";
 import {
   type IdeasRequest,
   type IdeasResponse,
@@ -18,6 +19,7 @@ import {
 } from "@/lib/ideas";
 import { IDEA_INPUT_LIMITS } from "@/lib/ideas-flow";
 import type { CollectedItem, ResolvedInterviewTurn } from "@/lib/interview";
+import { modelPreferenceHeaders } from "@/lib/model-preferences";
 import {
   dismissKey,
   MAX_DISMISSED,
@@ -28,6 +30,7 @@ import {
 } from "@/lib/originality";
 import { readPdfText } from "@/lib/pdf-text";
 import { answerFor } from "@/lib/quick-actions";
+import { type RequestOptions, stoppedResult } from "@/lib/request-stop";
 import { MAX_SESSION_TITLE, newId, planSignature, type StorySession } from "@/lib/session";
 import {
   checkSourceText,
@@ -51,31 +54,42 @@ import {
   MAX_CONTEXT_FACTS,
   MAX_REMOVED_FACTS,
   MAX_UNRESOLVED,
+  MAX_VISUAL_ENTITIES,
   type ContextFact,
   type RemovedFact,
   retractAnswerFacts,
   type StoryContext,
   toCollected,
+  type VisualEntity,
 } from "@/lib/story-context";
-import { contextFactSchema, removedFactSchema } from "@/lib/story-context-schema";
+import { contextFactSchema, removedFactSchema, visualEntitySchema } from "@/lib/story-context-schema";
 import { MAX_DECISIONS, MAX_REFINE_SOURCE_CHARACTERS, type ShotPlan } from "@/lib/story-planning";
+import { encodeTranscribeHint, TRANSCRIBE_HINT_HEADER, type TranscribeHint } from "@/lib/transcription";
 import { documentExtensionOf, imageTypeOf, UNSUPPORTED_UPLOAD } from "@/lib/upload";
 import { isUsageRecord, type UsageRecord } from "@/lib/usage";
+import { prepareVoiceUpload } from "@/lib/voice-upload";
 
 export { imageTypeOf };
 
-export type AgentResult<T> = ({ ok: true } & T) | { ok: false; error: string };
+/** `stopped` marks a request the filmmaker cancelled: never an error to show. */
+export type AgentResult<T> = ({ ok: true } & T) | { ok: false; error: string; stopped?: true };
 
 type WithUsage = { usage?: UsageRecord };
 
 const GENERIC_ERROR = "This step couldn’t connect. Try again.";
 
-async function postJson(path: string, body: unknown): Promise<AgentResult<{ data: Record<string, unknown> }>> {
+async function postJson(
+  path: string,
+  body: unknown,
+  { signal }: RequestOptions = {},
+): Promise<AgentResult<{ data: Record<string, unknown> }>> {
+  if (signal?.aborted) return stoppedResult();
   try {
     const response = await fetch(path, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...modelPreferenceHeaders() },
       body: JSON.stringify(body),
+      signal,
     });
     const result = (await response.json()) as Record<string, unknown>;
     if (!response.ok) {
@@ -83,7 +97,7 @@ async function postJson(path: string, body: unknown): Promise<AgentResult<{ data
     }
     return { ok: true, data: result };
   } catch {
-    return { ok: false, error: GENERIC_ERROR };
+    return signal?.aborted ? stoppedResult() : { ok: false, error: GENERIC_ERROR };
   }
 }
 
@@ -112,7 +126,14 @@ export function parseStoryContext(value: unknown): StoryContext | null {
         .map((parsed) => parsed.data as RemovedFact)
         .slice(-MAX_REMOVED_FACTS)
     : [];
-  return removed.length > 0 ? { facts, unresolved, removed } : { facts, unresolved };
+  const visuals = Array.isArray(record.visuals)
+    ? record.visuals
+        .map((item) => visualEntitySchema.safeParse(item))
+        .filter((parsed) => parsed.success)
+        .map((parsed) => parsed.data as VisualEntity)
+        .slice(0, MAX_VISUAL_ENTITIES)
+    : [];
+  return { facts, unresolved, ...(removed.length > 0 ? { removed } : {}), ...(visuals.length > 0 ? { visuals } : {}) };
 }
 
 /** The filmmaker's removals are client memory; keep them if a reply's context comes back without them. */
@@ -145,8 +166,9 @@ export async function askInterview(
   story: string,
   answered: { question: string; answer: string }[],
   context?: StoryContext,
+  options?: RequestOptions,
 ): Promise<AgentResult<InterviewReply>> {
-  const result = await postJson("/api/story/plan", { step: "interview", story, answered, context });
+  const result = await postJson("/api/story/plan", { step: "interview", story, answered, context }, options);
   if (!result.ok) return result;
   const { data } = result;
   if (data.status !== "ask" && data.status !== "complete") {
@@ -205,14 +227,19 @@ export async function generatePlan(
   answers: { question: string; answer: string }[],
   collected: CollectedItem[],
   context?: StoryContext,
+  options?: RequestOptions,
 ): Promise<AgentResult<{ plan: ShotPlan } & WithUsage>> {
-  const result = await postJson("/api/story/plan", {
-    step: "plan",
-    story,
-    answers,
-    collected: context ? toCollected(context, MAX_PLAN_COLLECTED) : collected.slice(0, MAX_PLAN_COLLECTED),
-    context: context ?? EMPTY_CONTEXT,
-  });
+  const result = await postJson(
+    "/api/story/plan",
+    {
+      step: "plan",
+      story,
+      answers,
+      collected: context ? toCollected(context, MAX_PLAN_COLLECTED) : collected.slice(0, MAX_PLAN_COLLECTED),
+      context: context ?? EMPTY_CONTEXT,
+    },
+    options,
+  );
   if (!result.ok) return result;
   const { data } = result;
   if (!data.title || !Array.isArray(data.scenes)) {
@@ -253,7 +280,10 @@ function isShotPlan(value: unknown): value is ShotPlan {
 
 export type DirectorAsk = DirectorRequest & { source?: string };
 
-export async function askDirector(request: DirectorAsk): Promise<AgentResult<{ response: DirectorResponse }>> {
+export async function askDirector(
+  request: DirectorAsk,
+  options?: RequestOptions,
+): Promise<AgentResult<{ response: DirectorResponse }>> {
   const body: DirectorAsk = {
     plan: request.plan,
     messages: request.messages
@@ -269,7 +299,7 @@ export async function askDirector(request: DirectorAsk): Promise<AgentResult<{ r
     source: request.source && request.source.length <= MAX_REFINE_SOURCE_CHARACTERS ? request.source : undefined,
     ...(request.intent === "edit" ? { intent: "edit" as const } : {}),
   };
-  const result = await postJson("/api/story/director", body);
+  const result = await postJson("/api/story/director", body, options);
   if (!result.ok) return result;
   const { data } = result;
   if (typeof data.reply !== "string" || (data.plan != null && !isShotPlan(data.plan))) {
@@ -293,14 +323,16 @@ export async function askDirector(request: DirectorAsk): Promise<AgentResult<{ r
 
 export type ImportedDocument = { text: string; characters: number; pages?: number };
 
-export async function importDocument(file: File): Promise<AgentResult<ImportedDocument>> {
+export async function importDocument(file: File, { signal }: RequestOptions = {}): Promise<AgentResult<ImportedDocument>> {
   const extension = documentExtensionOf(file.name);
   if (!extension) return { ok: false, error: UNSUPPORTED_UPLOAD };
   const label = `“${file.name}”`;
   if (file.size === 0) return { ok: false, error: "That file looks empty." };
+  if (signal?.aborted) return stoppedResult();
   try {
     if (extension === "pdf") {
-      const pdf = await readPdfText(file, label);
+      const pdf = await readPdfText(file, label, signal);
+      if (signal?.aborted) return stoppedResult();
       if (!pdf.ok) return pdf;
       return { ok: true, text: pdf.text, characters: pdf.text.length, pages: pdf.pages };
     }
@@ -308,17 +340,23 @@ export async function importDocument(file: File): Promise<AgentResult<ImportedDo
       return { ok: false, error: `Choose a file that is ${MAX_UPLOAD_MB.txt} MB or smaller.` };
     }
     const decoded = decodeTextFile(new Uint8Array(await file.arrayBuffer()));
+    if (signal?.aborted) return stoppedResult();
     if (!decoded.ok) return decoded;
     const checked = checkSourceText(decoded.text, label);
     if (!checked.ok) return checked;
     return { ok: true, text: checked.text, characters: checked.text.length };
   } catch {
+    if (signal?.aborted) return stoppedResult();
     return { ok: false, error: "The file couldn’t be imported. Try again or paste the text." };
   }
 }
 
-export async function createDigest(name: string, text: string): Promise<AgentResult<DigestResponse>> {
-  const result = await postJson("/api/story/digest", { name, text });
+export async function createDigest(
+  name: string,
+  text: string,
+  options?: RequestOptions,
+): Promise<AgentResult<DigestResponse>> {
+  const result = await postJson("/api/story/digest", { name, text }, options);
   if (!result.ok) return result;
   const { data } = result;
   if (typeof data.digest !== "string" || !data.digest.trim() || data.digest.length > MAX_DIGEST_CHARACTERS) {
@@ -332,19 +370,31 @@ export async function createDigest(name: string, text: string): Promise<AgentRes
   };
 }
 
-export async function transcribeVoice(file: File): Promise<AgentResult<{ text: string } & WithUsage>> {
+export type TranscribeOptions = RequestOptions & { hint?: TranscribeHint };
+
+export async function transcribeVoice(
+  file: File,
+  { signal, hint }: TranscribeOptions = {},
+): Promise<AgentResult<{ text: string } & WithUsage>> {
   if (file.size > MAX_VOICE_BYTES) {
     return { ok: false, error: "Choose a voice note that’s 4 MB or smaller." };
   }
+  if (signal?.aborted) return stoppedResult();
+  const upload = await prepareVoiceUpload(file);
+  if (signal?.aborted) return stoppedResult();
+  const encodedHint = hint ? encodeTranscribeHint(hint) : "";
   try {
     const response = await fetch("/api/story/transcribe", {
       method: "POST",
       headers: {
         "Content-Type": "application/octet-stream",
-        "X-Audio-Extension": file.name.split(".").pop()?.toLowerCase() ?? "",
-        "X-Audio-Type": file.type.replace(/[^\x20-\x7e]/g, ""),
+        "X-Audio-Extension": upload.extension,
+        "X-Audio-Type": upload.type.replace(/[^\x20-\x7e]/g, ""),
+        ...(encodedHint ? { [TRANSCRIBE_HINT_HEADER]: encodedHint } : {}),
+        ...modelPreferenceHeaders(),
       },
-      body: file,
+      body: upload.body,
+      signal,
     });
     const result = (await response.json()) as Record<string, unknown>;
     if (!response.ok || typeof result.text !== "string") {
@@ -355,6 +405,7 @@ export async function transcribeVoice(file: File): Promise<AgentResult<{ text: s
     }
     return { ok: true, text: result.text, usage: pickUsage(result) };
   } catch {
+    if (signal?.aborted) return stoppedResult();
     return { ok: false, error: "The voice note couldn’t be transcribed. Try again or type your message." };
   }
 }
@@ -390,16 +441,26 @@ function headerSafeName(name: string): string {
   return name.replace(/[^\w .()-]/g, "_").slice(0, 120);
 }
 
-export async function analyzeImage(file: File): Promise<AgentResult<ImageAnalysisResponse>> {
+export async function analyzeImage(
+  file: File,
+  { signal }: RequestOptions = {},
+): Promise<AgentResult<ImageAnalysisResponse>> {
   const type = imageTypeOf(file);
   if (!type) return { ok: false, error: "Choose a PNG, JPG or WebP image." };
   if (file.size > MAX_IMAGE_BYTES) return { ok: false, error: "Choose an image that’s 4 MB or smaller." };
   if (file.size === 0) return { ok: false, error: "That image looks empty." };
+  if (signal?.aborted) return stoppedResult();
   try {
     const response = await fetch("/api/story/image", {
       method: "POST",
-      headers: { "Content-Type": "application/octet-stream", "X-Image-Type": type, "X-Image-Name": headerSafeName(file.name) },
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-Image-Type": type,
+        "X-Image-Name": headerSafeName(file.name),
+        ...modelPreferenceHeaders(),
+      },
       body: file,
+      signal,
     });
     const result = (await response.json()) as Record<string, unknown>;
     if (!response.ok) {
@@ -411,6 +472,7 @@ export async function analyzeImage(file: File): Promise<AgentResult<ImageAnalysi
     }
     return { ok: true, reference, usage: result.usage };
   } catch {
+    if (signal?.aborted) return stoppedResult();
     return { ok: false, error: "The image couldn’t be read. Try again." };
   }
 }
@@ -477,8 +539,11 @@ function boundedIdeasRequest(request: IdeasRequest): IdeasRequest {
   }
 }
 
-export async function askIdeas(request: IdeasRequest): Promise<AgentResult<{ response: IdeasResponse }>> {
-  const result = await postJson("/api/story/ideas", boundedIdeasRequest(request));
+export async function askIdeas(
+  request: IdeasRequest,
+  options?: RequestOptions,
+): Promise<AgentResult<{ response: IdeasResponse }>> {
+  const result = await postJson("/api/story/ideas", boundedIdeasRequest(request), options);
   if (!result.ok) return result;
   const { data } = result;
   const parsedQuestion = parseIdeaQuestion(data.question);
@@ -504,6 +569,7 @@ export type OriginalityCheck = { report: OriginalityReport; usage: UsageRecord[]
 export async function checkOriginality(
   request: OriginalityRequest,
   now: number = Date.now(),
+  options?: RequestOptions,
 ): Promise<AgentResult<OriginalityCheck>> {
   const body: OriginalityRequest = {
     title: request.title.trim().slice(0, MAX_SESSION_TITLE) || "Untitled project",
@@ -513,7 +579,7 @@ export async function checkOriginality(
     ...(request.dismissed?.length ? { dismissed: request.dismissed.slice(-MAX_DISMISSED) } : {}),
     references: request.references,
   };
-  const result = await postJson("/api/story/originality", body);
+  const result = await postJson("/api/story/originality", body, options);
   if (!result.ok) return result;
   const { data } = result;
   if (!data.report || typeof data.report !== "object" || Array.isArray(data.report)) {
@@ -547,4 +613,39 @@ export function withRestoredFinding(session: StorySession, finding: Pick<Origina
   if (!session.originality.dismissed.includes(key)) return session;
   const dismissed = session.originality.dismissed.filter((item) => item !== key);
   return { ...session, originality: { ...session.originality, dismissed } };
+}
+
+const ENGAGEMENT_INCOMPLETE = "The engagement analysis came back incomplete. Try again.";
+
+export type EngagementCheck = { report: EngagementReport; usage: UsageRecord[] };
+
+/** One engagement analysis. The report is stamped here with the analysis time and the signature of the plan that was sent. */
+export async function checkEngagement(
+  request: EngagementRequest,
+  now: number = Date.now(),
+  options?: RequestOptions,
+): Promise<AgentResult<EngagementCheck>> {
+  const body: EngagementRequest = {
+    title: request.title.trim().slice(0, MAX_SESSION_TITLE) || "Untitled project",
+    plan: request.plan,
+    ...(request.context ? { context: request.context } : {}),
+    ...(request.source?.trim() && request.source.length <= MAX_REFINE_SOURCE_CHARACTERS ? { source: request.source } : {}),
+  };
+  const result = await postJson("/api/story/engagement", body, options);
+  if (!result.ok) return result;
+  const { data } = result;
+  if (!data.report || typeof data.report !== "object" || Array.isArray(data.report)) {
+    return { ok: false, error: ENGAGEMENT_INCOMPLETE };
+  }
+  const parsed = engagementReportSchema.safeParse({
+    ...(data.report as Record<string, unknown>),
+    createdAt: now,
+    planSignature: planSignature(request.plan),
+  });
+  if (!parsed.success) return { ok: false, error: ENGAGEMENT_INCOMPLETE };
+  return { ok: true, report: parsed.data, usage: Array.isArray(data.usage) ? data.usage.filter(isUsageRecord) : [] };
+}
+
+export function withEngagementReport(session: StorySession, report: EngagementReport): StorySession {
+  return { ...session, engagement: { report } };
 }

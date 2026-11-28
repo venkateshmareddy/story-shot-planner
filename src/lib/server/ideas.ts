@@ -127,9 +127,10 @@ export function openAIIdeasModel(client: Pick<OpenAI, "responses">): IdeasCallMo
     const format = zodTextFormat(ideasModelOutput, "story_ideas");
     const request = modelRequest("ideas", { instructions, input, format, maxOutputTokens });
     const response = await client.responses.parse(request, { signal });
-    const usage = toUsageRecord("ideas", STORY_MODEL, response.usage);
+    const model = response.model || request.model || STORY_MODEL;
+    const usage = toUsageRecord("ideas", model, response.usage);
     const written = cacheWriteTokens(response.usage);
-    logModelUsage({ step: "ideas", stage: "ideas", model: STORY_MODEL, usage, cacheWriteTokens: written });
+    logModelUsage({ step: "ideas", stage: "ideas", model, usage, cacheWriteTokens: written });
     if (response.status !== "completed" || !response.output_parsed) {
       throw new IdeasError(IDEAS_INCOMPLETE_MESSAGE, "incomplete", usage);
     }

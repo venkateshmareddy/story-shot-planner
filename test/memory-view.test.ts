@@ -12,6 +12,7 @@ import {
   SECTION,
   sections,
 } from "../src/lib/server/memory-view.ts";
+import { runEngagement } from "../src/lib/server/engagement.ts";
 import { runOriginality } from "../src/lib/server/originality.ts";
 import { runPlan } from "../src/lib/server/plan-generation.ts";
 import { composeInstructions } from "../src/lib/server/prompts.ts";
@@ -30,6 +31,16 @@ const CONTEXT: StoryContext = {
   ],
   unresolved: ["Why does the light fail?"],
   removed: [{ key: "characters:dog", value: "A black dog" }],
+};
+
+const READY: StoryContext = {
+  ...CONTEXT,
+  facts: [...CONTEXT.facts, { category: "format", label: "Film length", value: "5 minutes", source: "user", approved: true }],
+  visuals: [
+    { name: "Mara", kind: "character", key: true },
+    { name: "Lighthouse", kind: "place", key: true },
+    { name: "Red boat", kind: "object", key: false },
+  ],
 };
 
 test("memory facts are grouped by who said them, keep their order and their exact category ids", () => {
@@ -99,6 +110,25 @@ test("an interview turn sends story, answers and memory in that order, missing i
   assert.deepEqual(sectionList(text, SECTION.openQuestions), ["Why does the light fail?"]);
   const missing = sectionText(text, SECTION.missing)?.split(", ") ?? [];
   assert.ok(!missing.includes("characters") && missing[0] === "format", missing.join());
+});
+
+test("VISUAL GAPS comes last, lists only open key looks with a hint each, and says how many look questions are left", () => {
+  const text = interviewInput({ story: "The Last Keeper", answered: [{ question: "Who?", answer: "Mara" }], context: READY });
+  assert.equal(sectionTitles(text).at(-1), SECTION.visualGaps);
+  assert.equal(
+    sectionText(text, SECTION.visualGaps),
+    ["- Lighthouse: architecture or landscape, colour, condition", "- Mara: clothes, hair, distinguishing look", "Look questions left: 3"].join("\n"),
+  );
+  assert.ok(!interviewInput({ story: "S", context: CONTEXT }).includes(SECTION.visualGaps), "no look questions before idea, genre and format");
+  const known: StoryContext = {
+    ...READY,
+    facts: [
+      ...READY.facts,
+      { category: "characters", label: "Mara look", value: "Oilskin coat", source: "user", approved: true },
+      { category: "locations", label: "Lighthouse look", value: "White tower", source: "ai", approved: true },
+    ],
+  };
+  assert.ok(!interviewInput({ story: "S", context: known }).includes(SECTION.visualGaps), "absent when every key look is known");
 });
 
 test("filmmaker text is fenced or kept on one line, so it can never open a section of its own", () => {
@@ -178,6 +208,11 @@ test("every input section is named in the instructions of the call that receives
       instructions: composeInstructions("interview", "short_film"),
       input: interviewInput({ story: "S", answered: [{ question: "Q", answer: "A" }], context: CONTEXT, format: "short_film" }),
     },
+    {
+      step: "interview",
+      instructions: composeInstructions("interview", "short_film"),
+      input: interviewInput({ story: "S", answered: [{ question: "Q", answer: "A" }], context: READY, format: "short_film" }),
+    },
   ];
   const planModel: CallModel = async (call) => {
     calls.push(call);
@@ -250,6 +285,28 @@ test("every input section is named in the instructions of the call that receives
     { title: "The Last Keeper", plan: PLAN, context: CONTEXT, source: "Imported story", dismissed: ["plot:a keeper"], references: true },
     { callModel: originalityModel, fetch: async () => Response.json(page) },
   );
+
+  const engagementModel: CallModel = async (call) => {
+    calls.push(call);
+    const output =
+      call.stage === "engagement_summary"
+        ? { summary: "Holds attention.", keyFactors: [], dimensions: [], curveNotes: [], recommendations: [] }
+        : {
+            summary: "Mara works.",
+            purpose: "Shows her routine.",
+            strengths: [],
+            weaknesses: [],
+            pacing: "Even.",
+            curiosity: "None yet.",
+            emotion: "Calm.",
+            improvements: [],
+            flags: [],
+            evidence: [],
+            ratings: { tension: 2, curiosity: 2, emotion: 2, change: 1 },
+          };
+    return { output, usage: usage("engagement") };
+  };
+  await runEngagement({ title: "The Last Keeper", plan: PLAN, context: CONTEXT, source: "Imported story" }, engagementModel);
 
   const seen = new Set<string>();
   for (const call of calls) {

@@ -15,7 +15,8 @@ export type UsageStep =
   | "ideas"
   | "originality"
   /** A Wikipedia reference lookup: an external request with no model tokens (model "wikipedia"). */
-  | "originality-lookup";
+  | "originality-lookup"
+  | "engagement";
 
 export type UsageRecord = {
   step: UsageStep;

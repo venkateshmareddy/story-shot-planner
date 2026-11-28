@@ -33,6 +33,8 @@ function turn(overrides: Partial<InterviewTurnOutput> = {}): InterviewTurnOutput
     rationale: "The audience needs someone to follow.",
     recommendation: "",
     facts: [],
+    visuals: [],
+    asks: "",
     unresolved: [],
     ...overrides,
   };

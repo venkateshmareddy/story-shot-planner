@@ -37,3 +37,11 @@ The song and its lyrics belong to the song: look at the visual idea, the story t
 ## originality_compare
 
 Compare the visual idea and the story told on screen, not the song.
+
+## engagement_scene
+
+In a music video, rhythm, images and feeling can carry a scene without dialogue or conflict.
+
+## engagement_summary
+
+Judge pacing against the song's energy; when there is no story on screen, mark the story-only dimensions insufficient.

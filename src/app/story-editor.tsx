@@ -1,6 +1,14 @@
 "use client";
 
-import { type KeyboardEvent, useEffect, useId, useRef, useState } from "react";
+import { type KeyboardEvent, type ReactNode, type RefObject, useEffect, useId, useRef, useState } from "react";
+import {
+  LOOK_KIND_LABELS,
+  LOOK_STATUS_LABELS,
+  type LookRow,
+  lookRows,
+  lookValue,
+  openLooksLine,
+} from "@/lib/look-and-feel";
 import type { StorySession } from "@/lib/session";
 import type { StorySource } from "@/lib/source-text";
 import {
@@ -8,9 +16,13 @@ import {
   type ContextFact,
   contextReadiness,
   factKey,
+  isVisualFact,
   MAX_FACT_VALUE,
   missingCategories,
   type StoryContext,
+  type VisualEntity,
+  visualFactKey,
+  visualLabel,
 } from "@/lib/story-context";
 import type { ShotPlan } from "@/lib/story-planning";
 
@@ -21,6 +33,8 @@ type ContextActions = {
   onApproveFact: FactAction;
   onRemoveFact: FactAction;
   onEditFact: (key: string, value: string) => void;
+  /** Without it the "Add a look" button is hidden. */
+  onAddLook?: (entity: VisualEntity, value: string) => void;
 };
 type Scene = ShotPlan["scenes"][number];
 type Shot = Scene["shots"][number];
@@ -103,11 +117,12 @@ export function StoryEditor({
   onApproveFact,
   onRemoveFact,
   onEditFact,
+  onAddLook,
 }: {
   session: StorySession;
   onEditPlan: PlanEditor;
 } & ContextActions) {
-  const contextActions: ContextActions = { busy, onApproveFact, onRemoveFact, onEditFact };
+  const contextActions: ContextActions = { busy, onApproveFact, onRemoveFact, onEditFact, onAddLook };
   const { plan } = session;
   const [editing, setEditing] = useState<Set<string>>(new Set());
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
@@ -229,7 +244,8 @@ export function StoryEditor({
           </div>
         )}
 
-        {session.context && (session.context.facts.length > 0 || session.context.unresolved.length > 0) && (
+        {session.context &&
+          (session.context.facts.length > 0 || session.context.unresolved.length > 0 || lookRows(session.context).length > 0) && (
           <div className="editor-section">
             <details className="story-details">
               <summary className="editor-section-head">Story details</summary>
@@ -312,35 +328,126 @@ function DiscoveryDocument({ session, actions }: { session: StorySession; action
 
 const PRIORITY_TAGS = { critical: "Must have", high: "Important", medium: "Helpful", optional: "Optional" } as const;
 
-function FactItem({ fact, actions }: { fact: ContextFact; actions: ContextActions }) {
-  const key = factKey(fact);
+function useInlineEdit() {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState("");
   const fieldRef = useRef<HTMLTextAreaElement>(null);
-  const editButtonRef = useRef<HTMLButtonElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const wasEditing = useRef(false);
   const fieldId = useId();
 
   useEffect(() => {
     if (editing) fieldRef.current?.focus();
-    else if (wasEditing.current) editButtonRef.current?.focus();
+    else if (wasEditing.current) buttonRef.current?.focus();
     wasEditing.current = editing;
   }, [editing]);
 
-  const trimmed = draft.trim();
-  const saveDisabled = actions.busy || !trimmed || trimmed === fact.value.trim();
+  return { editing, setEditing, draft, setDraft, fieldRef, buttonRef, fieldId };
+}
 
-  function save() {
-    if (saveDisabled) return;
-    actions.onEditFact(key, trimmed);
-    setEditing(false);
-  }
+type InlineEdit = ReturnType<typeof useInlineEdit>;
 
+function FactEditForm({
+  edit,
+  heading,
+  name,
+  saveDisabled,
+  onSave,
+}: {
+  edit: InlineEdit;
+  heading: ReactNode;
+  name: string;
+  saveDisabled: boolean;
+  onSave: () => void;
+}) {
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Escape") {
       event.preventDefault();
-      setEditing(false);
+      edit.setEditing(false);
     }
+  }
+
+  return (
+    <li className="context-fact context-fact-editing">
+      <label className="context-fact-label" htmlFor={edit.fieldId}>
+        {heading}
+      </label>
+      <textarea
+        id={edit.fieldId}
+        ref={edit.fieldRef}
+        className="editor-input"
+        rows={3}
+        value={edit.draft}
+        maxLength={MAX_FACT_VALUE}
+        onChange={(event) => edit.setDraft(event.target.value)}
+        onKeyDown={onKeyDown}
+      />
+      <span className="context-fact-actions">
+        <button className="editor-edit-btn" type="button" disabled={saveDisabled} aria-label={`Save: ${name}`} onClick={onSave}>
+          Save
+        </button>
+        <button className="editor-remove" type="button" aria-label={`Cancel editing: ${name}`} onClick={() => edit.setEditing(false)}>
+          Cancel
+        </button>
+      </span>
+    </li>
+  );
+}
+
+function FactActions({
+  fact,
+  actions,
+  editRef,
+  onEdit,
+}: {
+  fact: ContextFact;
+  actions: ContextActions;
+  editRef: RefObject<HTMLButtonElement | null>;
+  onEdit: () => void;
+}) {
+  const key = factKey(fact);
+  return (
+    <span className="context-fact-actions">
+      {fact.source === "ai" && !fact.approved && (
+        <button
+          className="editor-edit-btn"
+          type="button"
+          disabled={actions.busy}
+          aria-label={`Approve: ${fact.label}`}
+          onClick={() => actions.onApproveFact(key)}
+        >
+          Approve
+        </button>
+      )}
+      <button ref={editRef} className="editor-edit-btn" type="button" disabled={actions.busy} aria-label={`Edit: ${fact.label}`} onClick={onEdit}>
+        Edit
+      </button>
+      <button
+        className="editor-remove"
+        type="button"
+        disabled={actions.busy}
+        aria-label={`Remove: ${fact.label}`}
+        onClick={() => actions.onRemoveFact(key)}
+      >
+        Remove
+      </button>
+    </span>
+  );
+}
+
+function editedText(edit: InlineEdit, actions: ContextActions, current?: string): { text: string; disabled: boolean } {
+  const text = edit.draft.trim();
+  return { text, disabled: actions.busy || !text || text === current?.trim() };
+}
+
+function FactItem({ fact, actions }: { fact: ContextFact; actions: ContextActions }) {
+  const edit = useInlineEdit();
+  const { text, disabled } = editedText(edit, actions, fact.value);
+
+  function save() {
+    if (disabled) return;
+    actions.onEditFact(factKey(fact), text);
+    edit.setEditing(false);
   }
 
   const heading = (
@@ -350,73 +457,23 @@ function FactItem({ fact, actions }: { fact: ContextFact; actions: ContextAction
     </>
   );
 
-  if (editing) {
-    return (
-      <li className="context-fact context-fact-editing">
-        <label className="context-fact-label" htmlFor={fieldId}>
-          {heading}
-        </label>
-        <textarea
-          id={fieldId}
-          ref={fieldRef}
-          className="editor-input"
-          rows={3}
-          value={draft}
-          maxLength={MAX_FACT_VALUE}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={onKeyDown}
-        />
-        <span className="context-fact-actions">
-          <button className="editor-edit-btn" type="button" disabled={saveDisabled} aria-label={`Save: ${fact.label}`} onClick={save}>
-            Save
-          </button>
-          <button className="editor-remove" type="button" aria-label={`Cancel editing: ${fact.label}`} onClick={() => setEditing(false)}>
-            Cancel
-          </button>
-        </span>
-      </li>
-    );
+  if (edit.editing) {
+    return <FactEditForm edit={edit} heading={heading} name={fact.label} saveDisabled={disabled} onSave={save} />;
   }
 
   return (
     <li className="context-fact">
       <span className="context-fact-label">{heading}</span>
       <span className="context-fact-value">{fact.value}</span>
-      <span className="context-fact-actions">
-        {fact.source === "ai" && !fact.approved && (
-          <button
-            className="editor-edit-btn"
-            type="button"
-            disabled={actions.busy}
-            aria-label={`Approve: ${fact.label}`}
-            onClick={() => actions.onApproveFact(key)}
-          >
-            Approve
-          </button>
-        )}
-        <button
-          ref={editButtonRef}
-          className="editor-edit-btn"
-          type="button"
-          disabled={actions.busy}
-          aria-label={`Edit: ${fact.label}`}
-          onClick={() => {
-            setDraft(fact.value);
-            setEditing(true);
-          }}
-        >
-          Edit
-        </button>
-        <button
-          className="editor-remove"
-          type="button"
-          disabled={actions.busy}
-          aria-label={`Remove: ${fact.label}`}
-          onClick={() => actions.onRemoveFact(key)}
-        >
-          Remove
-        </button>
-      </span>
+      <FactActions
+        fact={fact}
+        actions={actions}
+        editRef={edit.buttonRef}
+        onEdit={() => {
+          edit.setDraft(fact.value);
+          edit.setEditing(true);
+        }}
+      />
     </li>
   );
 }
@@ -432,13 +489,92 @@ function FactList({ facts, actions }: { facts: ContextFact[]; actions: ContextAc
   );
 }
 
+function LookItem({ row, actions }: { row: LookRow; actions: ContextActions }) {
+  const edit = useInlineEdit();
+  const { entity, fact, status } = row;
+  const name = entity.name.trim();
+  const { text, disabled } = editedText(edit, actions, fact?.value);
+
+  function save() {
+    if (disabled) return;
+    if (fact) actions.onEditFact(factKey(fact), text);
+    else actions.onAddLook?.(entity, text);
+    edit.setEditing(false);
+  }
+
+  const heading = (
+    <>
+      {name}
+      <span className="look-kind">{LOOK_KIND_LABELS[entity.kind]}</span>
+      <span className={`look-chip look-chip-${status}`}>{LOOK_STATUS_LABELS[status]}</span>
+    </>
+  );
+
+  if (edit.editing) {
+    return <FactEditForm edit={edit} heading={heading} name={fact?.label ?? visualLabel(entity)} saveDisabled={disabled} onSave={save} />;
+  }
+
+  return (
+    <li className="context-fact look-fact">
+      <span className="context-fact-label">{heading}</span>
+      <span className={fact ? "context-fact-value" : "context-fact-value look-empty"}>{lookValue(row)}</span>
+      {fact ? (
+        <FactActions
+          fact={fact}
+          actions={actions}
+          editRef={edit.buttonRef}
+          onEdit={() => {
+            edit.setDraft(fact.value);
+            edit.setEditing(true);
+          }}
+        />
+      ) : (
+        actions.onAddLook && (
+          <span className="context-fact-actions">
+            <button
+              ref={edit.buttonRef}
+              className="editor-edit-btn"
+              type="button"
+              disabled={actions.busy}
+              aria-label={`Add a look: ${name}`}
+              onClick={() => {
+                edit.setDraft("");
+                edit.setEditing(true);
+              }}
+            >
+              Add a look
+            </button>
+          </span>
+        )
+      )}
+    </li>
+  );
+}
+
+function LookGroup({ rows, actions }: { rows: LookRow[]; actions: ContextActions }) {
+  const openLine = openLooksLine(rows);
+  return (
+    <div className="context-group look-group">
+      <h4 className="editor-subhead">Look and feel</h4>
+      <ul className="context-facts">
+        {rows.map((row) => (
+          <LookItem key={visualFactKey(row.entity)} row={row} actions={actions} />
+        ))}
+      </ul>
+      {openLine && <p className="muted look-open-line">{openLine}</p>}
+    </div>
+  );
+}
+
 function StoryContextPanel({ context, actions }: { context: StoryContext; actions: ContextActions }) {
   const readiness = contextReadiness(context);
   const missing = missingCategories(context);
   const criticalMissing = missing.filter((category) => category.priority === "critical");
-  const fromYou = context.facts.filter((fact) => fact.source === "user");
-  const suggestions = context.facts.filter((fact) => fact.source === "ai" && !fact.approved);
-  const approved = context.facts.filter((fact) => fact.source === "ai" && fact.approved);
+  const looks = lookRows(context);
+  const facts = context.facts.filter((fact) => !isVisualFact(context, fact));
+  const fromYou = facts.filter((fact) => fact.source === "user");
+  const suggestions = facts.filter((fact) => fact.source === "ai" && !fact.approved);
+  const approved = facts.filter((fact) => fact.source === "ai" && fact.approved);
   return (
     <div className="story-context">
       <p className={`context-readiness${readiness.ready ? " context-ready" : ""}`} aria-live="polite">
@@ -464,6 +600,7 @@ function StoryContextPanel({ context, actions }: { context: StoryContext; action
           <FactList facts={approved} actions={actions} />
         </div>
       )}
+      {looks.length > 0 && <LookGroup rows={looks} actions={actions} />}
       {missing.length > 0 && (
         <div className="context-group">
           <h4 className="editor-subhead">Still missing</h4>

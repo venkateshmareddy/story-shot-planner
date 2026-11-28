@@ -37,3 +37,11 @@ Look at the series premise, the recurring characters and the situation that rene
 ## originality_compare
 
 A shared series premise and set of recurring characters matter most.
+
+## engagement_scene
+
+In a web series episode, a scene can open a question that pays off in a later episode.
+
+## engagement_summary
+
+Judge the hook in the first moments and whether the ending makes the next episode feel needed.

@@ -23,6 +23,8 @@ export const MODEL_SETTINGS = {
   digest: { verbosity: "low" },
   originality_review: { verbosity: "low" },
   originality_compare: { verbosity: "low" },
+  engagement_scene: { verbosity: "low" },
+  engagement_summary: { verbosity: "low" },
   draft: { verbosity: "medium" },
   plan_outline: { verbosity: "medium" },
   edit_plan: { verbosity: "medium" },
@@ -50,6 +52,7 @@ const STAGE_BY_STEP: Record<UsageStep, ModelStage | null> = {
   ideas: "ideas",
   originality: null,
   "originality-lookup": null,
+  engagement: null,
 };
 
 export function stageSettings(stage: ModelStage | null): StageSettings | null {

@@ -1,6 +1,7 @@
 "use client";
 
 import { type FormEvent, useEffect, useRef, useState } from "react";
+import { StopButton } from "./stop-button";
 import {
   type ConceptDigest,
   type IdeaExchange,
@@ -20,6 +21,7 @@ import {
   rememberShown,
   toggleSelected,
 } from "@/lib/ideas-flow";
+import { STOPPED_MESSAGE } from "@/lib/request-stop";
 import { totalUsage } from "@/lib/session";
 import { askIdeas } from "@/lib/studio-agent";
 import type { UsageRecord } from "@/lib/usage";
@@ -64,9 +66,11 @@ export function StoryIdeas({ onDevelop, onBack }: StoryIdeasProps) {
   const [usage, setUsage] = useState<UsageRecord[]>([]);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
+  const [stopped, setStopped] = useState(false);
   const [lastCall, setLastCall] = useState<IdeasCall | null>(null);
   const [focusId, setFocusId] = useState<string | null>(null);
   const pendingRef = useRef(false);
+  const controllerRef = useRef<AbortController | null>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const stageHeadingRef = useRef<HTMLHeadingElement>(null);
   const pending = status !== "";
@@ -79,6 +83,8 @@ export function StoryIdeas({ onDevelop, onBack }: StoryIdeasProps) {
   useEffect(() => {
     titleRef.current?.focus();
   }, []);
+
+  useEffect(() => () => controllerRef.current?.abort(), []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: move focus when the step or its question changes.
   useEffect(() => {
@@ -94,14 +100,19 @@ export function StoryIdeas({ onDevelop, onBack }: StoryIdeasProps) {
   async function run(call: IdeasCall) {
     if (pendingRef.current) return;
     pendingRef.current = true;
+    const controller = new AbortController();
+    controllerRef.current = controller;
     setStatus(call.status);
     setError("");
+    setStopped(false);
     setLastCall(call);
-    const result = await askIdeas(call.request);
+    const result = await askIdeas(call.request, { signal: controller.signal });
+    controllerRef.current = null;
     pendingRef.current = false;
     setStatus("");
     if (!result.ok) {
-      setError(result.error);
+      if (result.stopped) setStopped(true);
+      else setError(result.error);
       return;
     }
     const { response } = result;
@@ -222,6 +233,11 @@ export function StoryIdeas({ onDevelop, onBack }: StoryIdeasProps) {
 
   function retry() {
     if (lastCall) void run(lastCall);
+  }
+
+  function stop() {
+    controllerRef.current?.abort();
+    (stage === "opening" ? titleRef : stageHeadingRef).current?.focus();
   }
 
   return (
@@ -476,9 +492,12 @@ export function StoryIdeas({ onDevelop, onBack }: StoryIdeasProps) {
         </>
       )}
 
-      <p className="muted story-ideas-status" role="status">
-        {status}
-      </p>
+      <div className="stop-row">
+        <p className="muted story-ideas-status" role="status">
+          {status || (stopped ? STOPPED_MESSAGE : "")}
+        </p>
+        {pending && <StopButton onStop={stop} />}
+      </div>
       {error && (
         <div className="story-ideas-error" role="alert">
           <p className="error">{error}</p>

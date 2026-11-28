@@ -1,4 +1,5 @@
 import { originalityRequestSchema } from "@/lib/originality";
+import { resolveStoryModel } from "@/lib/server/model-catalog";
 import {
   createModelCaller,
   getOpenAI,
@@ -40,7 +41,7 @@ export async function POST(request: Request) {
   if (!client) return jsonError("Add OPENAI_API_KEY to the server’s .env file to check originality.", 503);
 
   try {
-    const result = await runOriginality(parsed.data, { callModel: createModelCaller(client) }, { signal: request.signal });
+    const result = await runOriginality(parsed.data, { callModel: createModelCaller(client, resolveStoryModel(request)) }, { signal: request.signal });
     return Response.json(result);
   } catch (error) {
     const metadata = modelErrorMetadata(error);

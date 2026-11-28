@@ -4,15 +4,28 @@ import {
   DECIDE_ANSWER,
   detectDiscoveryCommand,
   factKey,
+  MAX_VISUAL_QUESTIONS,
   mergeFacts,
   SKIPPED_ANSWER,
   type StoryContext,
   sameFactValue,
   toCollected,
+  VISUAL_KINDS,
+  type VisualEntity,
   withUnresolved,
 } from "./story-context";
 import { storyCategorySchema } from "./story-context-schema";
 import { MAX_ANSWER_CHARACTERS } from "./story-input";
+import { inferAsks,
+  closeSkipped,
+  findVisual,
+  lookChoiceLine,
+  markAsked,
+  openLooks,
+  sameVisual,
+  seedConditions,
+  trackVisuals,
+} from "./visual-discovery";
 
 export const MAX_INTERVIEW_TURNS = 12;
 
@@ -53,15 +66,27 @@ export const interviewFact = z.object({
   source: z.enum(["user", "ai"]),
 });
 
+export const interviewVisual = z.object({
+  name: z.string(),
+  kind: z.enum(VISUAL_KINDS),
+  key: z.boolean(),
+  central: z.boolean(),
+  look: z.string(),
+  source: z.enum(["user", "ai"]),
+});
+
 export const interviewTurnOutput = z.object({
   note: z.string(),
   complete: z.boolean(),
+  /** The VISUAL GAPS name this question is about; "" for a story question. */
+  asks: z.string(),
   question: z.string(),
   /** Short tappable answer choices; [] for an open question. */
   options: z.array(z.string()),
   rationale: z.string(),
   recommendation: z.string(),
   facts: z.array(interviewFact),
+  visuals: z.array(interviewVisual),
   unresolved: z.array(z.string()),
 });
 export type InterviewTurnOutput = z.infer<typeof interviewTurnOutput>;
@@ -213,6 +238,29 @@ export function attributeFacts(
   });
 }
 
+export type VisualGaps = { left: number; gaps: VisualEntity[] };
+
+// None before idea, genre and format; one look question beyond the limit only ever goes to the thing the story revolves around.
+export function visualGaps(context: StoryContext, answered: readonly InterviewExchange[]): VisualGaps {
+  // Not gated on readiness: genre/format often settle in the same turn the model decides to stop (live finding).
+  const open = openLooks(context);
+  const asked = (context.visuals ?? []).filter((entity) => entity.asked !== undefined);
+  const centralAsked = asked.some((entity) => entity.central);
+  let left = MAX_VISUAL_QUESTIONS - asked.length + (centralAsked ? 1 : 0);
+  let gaps = open;
+  if (left <= 0) {
+    gaps = centralAsked ? [] : open.filter((entity) => entity.central);
+    left = gaps.length ? 1 : 0;
+  }
+  left = Math.min(left, Math.max(0, MAX_INTERVIEW_TURNS - answered.length));
+  return left > 0 ? { left, gaps } : { left: 0, gaps: [] };
+}
+
+function withLookChoice(recommendation: string, context: StoryContext): string {
+  const line = lookChoiceLine(context);
+  return line ? `${recommendation} ${line}` : recommendation;
+}
+
 export function resolveInterviewTurn(
   output: InterviewTurnOutput,
   answered: InterviewExchange[],
@@ -220,35 +268,52 @@ export function resolveInterviewTurn(
   maxTurns: number = MAX_INTERVIEW_TURNS,
   options: { titleOnly?: boolean } = {},
 ): ResolvedInterviewTurn {
-  const updates = attributeFacts(output.facts, answered, context, options.titleOnly ?? false);
-  const merged = withUnresolved(
-    mergeFacts(context, updates),
-    output.unresolved.map((item) => clip(item, 300)),
+  const tracked = trackVisuals(context, output.visuals);
+  const lookKeys = new Set(tracked.looks.map(factKey));
+  const modelFacts = output.facts.filter((fact) => !lookKeys.has(factKey({ category: fact.category, label: clip(fact.label, 80) })));
+  const updates = attributeFacts([...modelFacts, ...tracked.looks], answered, tracked.context, options.titleOnly ?? false);
+  const merged = closeSkipped(
+    seedConditions(
+      context.visuals ?? [],
+      withUnresolved(
+        mergeFacts(tracked.context, updates),
+        output.unresolved.map((item) => clip(item, 300)),
+      ),
+    ),
+    answered.length,
+    answered.at(-1)?.answer === SKIPPED_ANSWER,
   );
-  const state = {
-    note: clipAtWord(output.note, MAX_NOTE_CHARACTERS),
-    context: merged,
-    collected: toCollected(merged),
-  };
+  const note = clipAtWord(output.note, MAX_NOTE_CHARACTERS);
 
   const question = clip(tidyQuestion(output.question), 500);
+  const target = output.asks.trim()
+    ? findVisual(merged.visuals ?? [], clip(output.asks, 200))
+    : inferAsks(question, visualGaps(merged, answered).gaps);
+  const repeat = target !== undefined && (target.asked !== undefined || target.closed === true);
+  const openGap = target !== undefined && !repeat && visualGaps(merged, answered).gaps.some((gap) => sameVisual(gap, target));
+  // Looks of different things read alike ("the beach house" vs "the house"); a look question is checked by what it names.
   const isDuplicate =
     question.length > 0 &&
+    !openGap &&
     isNearDuplicate(
       question,
       answered.map((exchange) => exchange.question),
     );
   const capReached = answered.length >= maxTurns;
 
-  if (output.complete || question.length === 0 || isDuplicate || capReached) {
-    return { status: "complete", recommendation: clip(output.recommendation, 600) || DEFAULT_RECOMMENDATION, ...state };
+  if (output.complete || question.length === 0 || isDuplicate || repeat || capReached) {
+    const recommendation = withLookChoice(clip(output.recommendation, 600) || DEFAULT_RECOMMENDATION, merged);
+    return { status: "complete", recommendation, note, context: merged, collected: toCollected(merged) };
   }
 
+  const asked = target ? markAsked(merged, target, answered.length) : merged;
   return {
     status: "ask",
     question,
     options: tidyOptions(output.options),
     rationale: clipAtWord(output.rationale, MAX_RATIONALE_CHARACTERS),
-    ...state,
+    note,
+    context: asked,
+    collected: toCollected(asked),
   };
 }

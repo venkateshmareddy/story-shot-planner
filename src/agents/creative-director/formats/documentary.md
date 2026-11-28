@@ -37,3 +37,11 @@ Real events, people and facts belong to no one: look only at how the film tells 
 ## originality_compare
 
 A shared real subject or event is never a finding: compare only how the stories are told.
+
+## engagement_scene
+
+In a documentary, curiosity and change come from what is shown and learned, not only from conflict.
+
+## engagement_summary
+
+Judge the hook by the question the film opens and the ending by what it finally shows or explains.

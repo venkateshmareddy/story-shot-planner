@@ -29,6 +29,7 @@ import {
   splitFindings,
 } from "../src/lib/originality-ui.ts";
 import { ORIGINALITY_ACTION } from "../src/lib/quick-actions.ts";
+import { REPORT_CONFIRM_COPY } from "../src/lib/report-confirm.ts";
 import { createSession, parseSessions, planSignature, serializeSessions, type StorySession } from "../src/lib/session.ts";
 import type { StoryContext } from "../src/lib/story-context.ts";
 import { MAX_CHAT_MESSAGE_CHARACTERS } from "../src/lib/story-input.ts";
@@ -347,7 +348,12 @@ test("no UI copy shows percentages, originality guarantees or legal conclusions"
     ...Object.values(FINDING_ACTION_HINTS),
     ...Object.values(SEVERITY_LABELS),
     ORIGINALITY_ACTION.label,
+    ORIGINALITY_ACTION.shortLabel,
     ORIGINALITY_ACTION.tooltip,
+    REPORT_CONFIRM_COPY.originality.title,
+    REPORT_CONFIRM_COPY.originality.text,
+    REPORT_CONFIRM_COPY.originality.option?.label ?? "",
+    REPORT_CONFIRM_COPY.originality.option?.note ?? "",
     dismissedHeading(3),
     checkedAtLabel("28 Nov 2026"),
     moreLabel(2),
