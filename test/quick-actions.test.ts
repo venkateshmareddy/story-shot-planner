@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { selectSpecialists } from "../src/lib/agents/router.ts";
 import { SPECIALIST_IDS } from "../src/lib/agents/types.ts";
-import { QUICK_ACTIONS } from "../src/lib/quick-actions.ts";
+import { ORIGINALITY_ACTION, QUICK_ACTIONS, showOriginalityAction } from "../src/lib/quick-actions.ts";
+import { createSession } from "../src/lib/session.ts";
+import type { ShotPlan } from "../src/lib/story-planning.ts";
 
 test("quick actions have unique, non-empty labels and messages", () => {
   assert.equal(QUICK_ACTIONS.length, 6);
@@ -32,4 +34,16 @@ test("each single-specialist chip covers a different specialist, and Full review
   const full = QUICK_ACTIONS.find((action) => action.label === "Full review");
   assert.ok(full);
   assert.deepEqual([...selectSpecialists(full.message)].sort(), [...SPECIALIST_IDS].sort());
+});
+
+test("the originality chip is its own entry and shows only once a plan exists", () => {
+  assert.ok(!QUICK_ACTIONS.some((action) => action.label === ORIGINALITY_ACTION.label));
+  assert.equal(ORIGINALITY_ACTION.label, "Check story originality");
+  assert.ok(ORIGINALITY_ACTION.tooltip.trim());
+  const plan: ShotPlan = { title: "T", logline: "", intent: "", characters: [], locations: [], scenes: [], reviewNotes: [] };
+  const session = createSession("Test");
+  assert.equal(showOriginalityAction(session), false);
+  assert.equal(showOriginalityAction({ ...session, readyToPlan: true }), false);
+  assert.equal(showOriginalityAction({ ...session, phase: "refining" }), false);
+  assert.equal(showOriginalityAction({ ...session, phase: "refining", plan }), true);
 });

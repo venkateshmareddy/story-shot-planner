@@ -17,6 +17,7 @@ import {
   SURPRISE_ME,
 } from "@/lib/ideas";
 import { STORY_MODEL } from "@/lib/models";
+import { cacheWriteTokens, logModelUsage, modelRequest } from "@/lib/server/openai";
 import { composeInstructions } from "@/lib/server/prompts";
 import { toUsageRecord, type UsageRecord } from "@/lib/usage";
 
@@ -123,19 +124,12 @@ export class IdeasError extends Error {
 
 export function openAIIdeasModel(client: Pick<OpenAI, "responses">): IdeasCallModel {
   return async ({ instructions, input, maxOutputTokens, signal }) => {
-    const response = await client.responses.parse(
-      {
-        model: STORY_MODEL,
-        store: false,
-        instructions,
-        input,
-        max_output_tokens: maxOutputTokens,
-        text: { format: zodTextFormat(ideasModelOutput, "story_ideas") },
-      },
-      { signal },
-    );
+    const format = zodTextFormat(ideasModelOutput, "story_ideas");
+    const request = modelRequest("ideas", { instructions, input, format, maxOutputTokens });
+    const response = await client.responses.parse(request, { signal });
     const usage = toUsageRecord("ideas", STORY_MODEL, response.usage);
-    console.info("Model usage", { step: "ideas", model: STORY_MODEL, usage });
+    const written = cacheWriteTokens(response.usage);
+    logModelUsage({ step: "ideas", stage: "ideas", model: STORY_MODEL, usage, cacheWriteTokens: written });
     if (response.status !== "completed" || !response.output_parsed) {
       throw new IdeasError(IDEAS_INCOMPLETE_MESSAGE, "incomplete", usage);
     }

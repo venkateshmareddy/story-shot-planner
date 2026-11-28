@@ -134,5 +134,5 @@ test("the interview prompt asks for plain fact wording and respects removed deta
   const text = composeInstructions("interview", "short_film");
   assert.ok(text.includes("never hedge (possible, maybe)"));
   assert.ok(text.includes("never say where it came from"));
-  assert.ok(text.includes("context.removed lists details the filmmaker deleted: never add them back"));
+  assert.ok(text.includes("REMOVED lists details the filmmaker deleted: never add them back"));
 });

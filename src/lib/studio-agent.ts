@@ -18,9 +18,17 @@ import {
 } from "@/lib/ideas";
 import { IDEA_INPUT_LIMITS } from "@/lib/ideas-flow";
 import type { CollectedItem, ResolvedInterviewTurn } from "@/lib/interview";
+import {
+  dismissKey,
+  MAX_DISMISSED,
+  type OriginalityFinding,
+  type OriginalityReport,
+  type OriginalityRequest,
+  originalityReportSchema,
+} from "@/lib/originality";
 import { readPdfText } from "@/lib/pdf-text";
 import { answerFor } from "@/lib/quick-actions";
-import { newId, type StorySession } from "@/lib/session";
+import { MAX_SESSION_TITLE, newId, planSignature, type StorySession } from "@/lib/session";
 import {
   checkSourceText,
   decodeTextFile,
@@ -259,6 +267,7 @@ export async function askDirector(request: DirectorAsk): Promise<AgentResult<{ r
     context: request.context,
     decisions: request.decisions?.slice(-MAX_DECISIONS),
     source: request.source && request.source.length <= MAX_REFINE_SOURCE_CHARACTERS ? request.source : undefined,
+    ...(request.intent === "edit" ? { intent: "edit" as const } : {}),
   };
   const result = await postJson("/api/story/director", body);
   if (!result.ok) return result;
@@ -485,4 +494,57 @@ export async function askIdeas(request: IdeasRequest): Promise<AgentResult<{ res
     .slice(0, MAX_CONCEPTS);
   if (!question && concepts.length === 0) return { ok: false, error: IDEAS_INCOMPLETE };
   return { ok: true, response: { question, concepts: question ? [] : concepts, usage: data.usage } };
+}
+
+const ORIGINALITY_INCOMPLETE = "The originality check came back incomplete. Try again.";
+
+export type OriginalityCheck = { report: OriginalityReport; usage: UsageRecord[] };
+
+/** One originality check. The report is stamped here with the check time and the signature of the plan that was sent. */
+export async function checkOriginality(
+  request: OriginalityRequest,
+  now: number = Date.now(),
+): Promise<AgentResult<OriginalityCheck>> {
+  const body: OriginalityRequest = {
+    title: request.title.trim().slice(0, MAX_SESSION_TITLE) || "Untitled project",
+    plan: request.plan,
+    ...(request.context ? { context: request.context } : {}),
+    ...(request.source?.trim() && request.source.length <= MAX_REFINE_SOURCE_CHARACTERS ? { source: request.source } : {}),
+    ...(request.dismissed?.length ? { dismissed: request.dismissed.slice(-MAX_DISMISSED) } : {}),
+    references: request.references,
+  };
+  const result = await postJson("/api/story/originality", body);
+  if (!result.ok) return result;
+  const { data } = result;
+  if (!data.report || typeof data.report !== "object" || Array.isArray(data.report)) {
+    return { ok: false, error: ORIGINALITY_INCOMPLETE };
+  }
+  const parsed = originalityReportSchema.safeParse({
+    ...(data.report as Record<string, unknown>),
+    createdAt: now,
+    planSignature: planSignature(request.plan),
+  });
+  if (!parsed.success) return { ok: false, error: ORIGINALITY_INCOMPLETE };
+  return { ok: true, report: parsed.data, usage: Array.isArray(data.usage) ? data.usage.filter(isUsageRecord) : [] };
+}
+
+/** Store a new report; findings the filmmaker dismissed earlier stay dismissed. */
+export function withOriginalityReport(session: StorySession, report: OriginalityReport): StorySession {
+  return { ...session, originality: { report, dismissed: session.originality?.dismissed ?? [] } };
+}
+
+/** Newest dismissals are kept when the list is full. */
+export function withDismissedFinding(session: StorySession, finding: Pick<OriginalityFinding, "dimension" | "title">): StorySession {
+  if (!session.originality) return session;
+  const key = dismissKey(finding);
+  const dismissed = [...session.originality.dismissed.filter((item) => item !== key), key].slice(-MAX_DISMISSED);
+  return { ...session, originality: { ...session.originality, dismissed } };
+}
+
+export function withRestoredFinding(session: StorySession, finding: Pick<OriginalityFinding, "dimension" | "title">): StorySession {
+  if (!session.originality) return session;
+  const key = dismissKey(finding);
+  if (!session.originality.dismissed.includes(key)) return session;
+  const dismissed = session.originality.dismissed.filter((item) => item !== key);
+  return { ...session, originality: { ...session.originality, dismissed } };
 }

@@ -1,4 +1,5 @@
 import type { SpecialistId } from "@/lib/agents/types";
+import type { StorySession } from "@/lib/session";
 import { DECIDE_ANSWER, type DiscoveryCommand, SKIPPED_ANSWER } from "@/lib/story-context";
 
 export type QuickAction = {
@@ -45,6 +46,17 @@ export const QUICK_ACTIONS: readonly QuickAction[] = [
     specialists: "all",
   },
 ];
+
+/** Sits in the expert row but opens the originality report instead of sending a chat message. */
+export const ORIGINALITY_ACTION = {
+  label: "Check story originality",
+  tooltip:
+    "Look for parts of your story that may be close to existing films, books or shows. Opens a report; nothing in your story changes.",
+} as const;
+
+export function showOriginalityAction(session: Pick<StorySession, "phase" | "plan">): boolean {
+  return session.phase === "refining" && session.plan !== null;
+}
 
 export type DiscoveryAction = { label: string; command: DiscoveryCommand };
 

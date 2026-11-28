@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ExportMenu } from "@/app/export-menu";
 import { ConversationPanel, type UploadingKind } from "./conversation-panel";
+import { OriginalityPanel } from "./originality-report";
 import { SettingsScreen, type SettingsSection } from "./settings-screen";
 import { Sidebar } from "./sidebar";
 import { StoryEditor } from "./story-editor";
@@ -12,7 +13,9 @@ import { buildDecisionHistory } from "@/lib/decisions";
 import { conceptProjectTitle, conceptSource, seedContextFromConcept, type StoryConcept } from "@/lib/ideas";
 import { sessionFromConcept } from "@/lib/ideas-flow";
 import { addExtraDirection } from "@/lib/interview";
-import { answerFor } from "@/lib/quick-actions";
+import type { OriginalityFinding } from "@/lib/originality";
+import { type FindingAction, findingActionMessage } from "@/lib/originality-ui";
+import { answerFor, showOriginalityAction } from "@/lib/quick-actions";
 import { MAX_SESSION_TITLE, newId, planSignature, type ChatMessage, type StorySession } from "@/lib/session";
 import { checkSourceText, needsDigest, type SourceKind, type StorySource, storyForStep } from "@/lib/source-text";
 import {
@@ -31,6 +34,7 @@ import {
   analyzeImage,
   askDirector,
   askInterview,
+  checkOriginality,
   createDigest,
   directorCollected,
   directorSource,
@@ -39,7 +43,10 @@ import {
   type InterviewReply,
   MAX_REFERENCES,
   transcribeVoice,
+  withDismissedFinding,
   withEditedAnswer,
+  withOriginalityReport,
+  withRestoredFinding,
   withSessionContext,
 } from "@/lib/studio-agent";
 import { classifyUpload, documentExtensionOf, routeLongText, sourceNote, tooLongForChatMessage } from "@/lib/upload";
@@ -65,6 +72,9 @@ export function StudioApp() {
   const [busyNote, setBusyNote] = useState<{ id: string; text: string } | null>(null);
   const [voiceError, setVoiceError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [originalityOpen, setOriginalityOpen] = useState(false);
+  const [originalityRun, setOriginalityRun] = useState<{ id: string; references: boolean } | null>(null);
+  const [originalityError, setOriginalityError] = useState<{ id: string; text: string } | null>(null);
   const activeIdRef = useRef<string | null>(store.activeId);
   const sessionsRef = useRef<StorySession[]>(store.sessions);
   const requestIdRef = useRef(0);
@@ -116,6 +126,7 @@ export function StudioApp() {
     setInput("");
     setError("");
     setVoiceError("");
+    setOriginalityOpen(false);
   }, [store.activeId]);
 
   const recordUsage = useCallback(
@@ -279,7 +290,7 @@ export function StudioApp() {
     applyInterviewTurn(session.id, result);
   }
 
-  async function sendRefine(session: StorySession, text: string, fromComposer = true) {
+  async function sendRefine(session: StorySession, text: string, fromComposer = true, intent?: "edit") {
     if (!session.plan) return;
     const baseSignature = planSignature(session.plan);
     const userMessage: ChatMessage = { id: newId(), role: "user", text };
@@ -300,6 +311,7 @@ export function StudioApp() {
       context: session.context,
       decisions: buildDecisionHistory(session.messages),
       source: directorSource(session.title, session.source),
+      intent,
     });
     finishRequest(requestId);
     if (!result.ok) {
@@ -359,6 +371,54 @@ export function StudioApp() {
   function sendQuickAction(message: string) {
     if (!active || busy || transcribing || uploading || active.phase !== "refining") return;
     void sendRefine(active, message, false);
+  }
+
+  async function runOriginalityCheck(references: boolean) {
+    if (!active?.plan || busy || transcribing || uploading) return;
+    const session = active;
+    const plan = active.plan;
+    setOriginalityError((current) => (current?.id === session.id ? null : current));
+    const requestId = beginRequest(session.id);
+    setOriginalityRun({ id: session.id, references });
+    setBusyNote({ id: session.id, text: "Checking your story’s originality…" });
+    const result = await checkOriginality({
+      title: session.title,
+      plan,
+      context: session.context,
+      source: directorSource(session.title, session.source),
+      dismissed: session.originality?.dismissed,
+      references,
+    });
+    clearBusyNote(session.id);
+    setOriginalityRun((current) => (current?.id === session.id ? null : current));
+    finishRequest(requestId);
+    if (!result.ok) {
+      setOriginalityError({ id: session.id, text: result.error });
+      return;
+    }
+    store.update(session.id, (current) => withOriginalityReport(current, result.report));
+    recordUsage(session.id, result.usage);
+  }
+
+  function openOriginality() {
+    if (!active || !showOriginalityAction(active)) return;
+    setOriginalityOpen(true);
+  }
+
+  function sendFindingAction(action: FindingAction, finding: OriginalityFinding) {
+    if (!active || busy || transcribing || uploading || active.phase !== "refining") return;
+    setOriginalityOpen(false);
+    void sendRefine(active, findingActionMessage(action, finding), false, action === "revise" ? "edit" : undefined);
+  }
+
+  function dismissFinding(finding: OriginalityFinding) {
+    if (!active || busy) return;
+    store.update(active.id, (current) => withDismissedFinding(current, finding));
+  }
+
+  function restoreFinding(finding: OriginalityFinding) {
+    if (!active || busy) return;
+    store.update(active.id, (current) => withRestoredFinding(current, finding));
   }
 
   async function createPlan(
@@ -759,6 +819,8 @@ export function StudioApp() {
               }
               uploading={uploading}
               busyText={busyNote?.id === active.id ? busyNote.text : undefined}
+              originalityOpen={originalityOpen && showOriginalityAction(active)}
+              onOpenOriginality={openOriginality}
               onInput={setInput}
               onSend={send}
               onQuickAction={sendQuickAction}
@@ -773,6 +835,21 @@ export function StudioApp() {
               onUpload={handleUpload}
               onRetry={() => void openConversation(active.id, active.title, active.source, active.context)}
             />
+            {originalityOpen && showOriginalityAction(active) && (
+              <OriginalityPanel
+                plan={active.plan}
+                context={active.context}
+                originality={active.originality}
+                busy={busy || transcribing || uploading !== null}
+                running={originalityRun?.id === active.id ? { references: originalityRun.references } : null}
+                error={originalityError?.id === active.id ? originalityError.text : ""}
+                onRun={(references) => void runOriginalityCheck(references)}
+                onClose={() => setOriginalityOpen(false)}
+                onAction={sendFindingAction}
+                onDismiss={dismissFinding}
+                onRestore={restoreFinding}
+              />
+            )}
             <StoryEditor
               session={active}
               busy={busy}

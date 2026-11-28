@@ -1,5 +1,6 @@
 import type { ImageReference, Recommendation, SpecialistId } from "@/lib/agents/types";
 import type { CollectedItem } from "@/lib/interview";
+import { type SessionOriginality, sessionOriginalitySchema } from "@/lib/originality";
 import { storyContextSchema } from "@/lib/story-context-schema";
 import type { StorySource } from "@/lib/source-text";
 import type { StoryContext } from "@/lib/story-context";
@@ -68,6 +69,8 @@ export type StorySession = {
   context?: StoryContext;
   /** Imported story (TXT, PDF or a long voice note): full text plus a digest when it is long. */
   source?: StorySource;
+  /** Latest originality review and the findings the filmmaker dismissed. Optional so older sessions still load. */
+  originality?: SessionOriginality;
 };
 
 export type PersistedSessions = {
@@ -105,8 +108,9 @@ export function totalUsage(records: UsageRecord[]) {
       inputTokens: sum.inputTokens + record.inputTokens,
       outputTokens: sum.outputTokens + record.outputTokens,
       totalTokens: sum.totalTokens + record.totalTokens,
+      cachedTokens: sum.cachedTokens + (record.cachedTokens ?? 0),
     }),
-    { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+    { inputTokens: 0, outputTokens: 0, totalTokens: 0, cachedTokens: 0 },
   );
 }
 
@@ -142,6 +146,13 @@ export function isStorySource(value: unknown): value is StorySource {
 }
 
 /** Keep the session even if its saved story source is malformed; drop only the bad source. */
+/** Keep the session even if its saved originality report is malformed; drop only the report. */
+function withValidOriginality(session: StorySession): StorySession {
+  if (session.originality === undefined || sessionOriginalitySchema.safeParse(session.originality).success) return session;
+  const { originality: _dropped, ...rest } = session;
+  return rest;
+}
+
 function withValidSource(session: StorySession): StorySession {
   if (session.source === undefined || isStorySource(session.source)) return session;
   const { source: _dropped, ...rest } = session;
@@ -202,7 +213,7 @@ export function parseSessions(raw: string | null): PersistedSessions {
     if (!parsed || typeof parsed !== "object") return empty;
     const record = parsed as Record<string, unknown>;
     if (record.version !== SESSIONS_STORAGE_VERSION || !Array.isArray(record.sessions)) return empty;
-    const sessions = record.sessions.filter(isStorySession).map(withValidSource);
+    const sessions = record.sessions.filter(isStorySession).map(withValidSource).map(withValidOriginality);
     const activeId = typeof record.activeId === "string" && sessions.some((s) => s.id === record.activeId)
       ? record.activeId
       : (sessions[0]?.id ?? null);

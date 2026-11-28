@@ -1,9 +1,31 @@
 import { DEFAULT_FORMAT, type FilmFormat } from "@/lib/formats";
 import type { CollectedItem, InterviewExchange } from "@/lib/interview";
-import { type CallModel, deadline, ModelOutputError, untilAborted } from "@/lib/server/openai";
+import {
+  answersSection,
+  collectedSection,
+  contextFacts,
+  jsonSection,
+  listSection,
+  memorySection,
+  removedSection,
+  SECTION,
+  section,
+  sections,
+  splitDirections,
+  textSection,
+} from "@/lib/server/memory-view";
+import {
+  type CallModel,
+  deadline,
+  type ModelCall,
+  ModelOutputError,
+  PREWARM_TIMEOUT_MS,
+  prewarmPrefix,
+  untilAborted,
+} from "@/lib/server/openai";
 import { findPlanProblem } from "@/lib/server/plan-validation";
 import { composeInstructions } from "@/lib/server/prompts";
-import type { StoryContext } from "@/lib/story-context";
+import { MAX_CONTEXT_FACTS, type StoryContext, toCollected } from "@/lib/story-context";
 import {
   MAX_PLAN_SCENES,
   type PlanOutline,
@@ -25,6 +47,7 @@ export type PlanOptions = {
   signal?: AbortSignal;
   outlineTimeoutMs?: number;
   sceneTimeoutMs?: number;
+  prewarmTimeoutMs?: number;
 };
 
 export type PlanResult = { plan: ShotPlan; usage: UsageRecord };
@@ -68,14 +91,37 @@ function outlineBrief(outline: PlanOutline) {
   };
 }
 
+/** Collected details the context doesn't already state: clients send collected as the flattened context. */
+export function collectedBeyondContext(collected: readonly CollectedItem[], context: StoryContext | undefined): CollectedItem[] {
+  if (!context?.facts.length) return [...collected];
+  const key = ({ label, detail }: CollectedItem) => `${label.trim()}\n${detail.trim()}`;
+  const stated = new Set(toCollected(context, MAX_CONTEXT_FACTS).map(key));
+  return collected.filter((item) => !stated.has(key(item)));
+}
+
+/** Text the filmmaker sent after discovery: it reaches no context fact, so the scene calls need it verbatim. */
+export function extraDirections(answers: readonly InterviewExchange[]): string[] {
+  return splitDirections(answers).directions;
+}
+
 async function writeOutline(input: PlanInput, format: FilmFormat, callModel: CallModel, options: PlanOptions) {
   const signal = deadline(options.signal, options.outlineTimeoutMs ?? OUTLINE_TIMEOUT_MS);
-  const { story, answers, collected, context } = input;
+  const { story, context } = input;
+  const { answers, directions } = splitDirections(input.answers);
   const result = await untilAborted(
     callModel({
       step: "plan",
+      stage: "plan_outline",
       instructions: composeInstructions("plan_outline", format),
-      input: JSON.stringify({ story, answers, collected, context }),
+      input: sections(
+        textSection(SECTION.story, story),
+        answersSection(answers),
+        listSection(SECTION.directions, directions),
+        context ? memorySection(contextFacts(context)) : "",
+        removedSection(context?.removed),
+        listSection(SECTION.openQuestions, context?.unresolved ?? []),
+        collectedSection(collectedBeyondContext(input.collected ?? [], context)),
+      ),
       schema: planOutlineOutput,
       maxOutputTokens: OUTLINE_MAX_OUTPUT_TOKENS,
       signal,
@@ -91,30 +137,21 @@ async function writeOutline(input: PlanInput, format: FilmFormat, callModel: Cal
   return { outline: parsed.data, usage: result.usage };
 }
 
-type SceneInput = { story: string; answers: InterviewExchange[]; collected: CollectedItem[]; outline: ReturnType<typeof outlineBrief> };
+type SceneCall = Omit<ModelCall, "input" | "cachedPrefix" | "signal" | "timeoutMs">;
 
+/** `shared` is the prefix every scene call sends first; `cached` when a prewarm wrote it to the prompt cache. */
 async function writeScene(
   sceneNumber: number,
-  shared: SceneInput,
-  format: FilmFormat,
+  call: SceneCall,
+  shared: { prefix: string; cached: boolean },
   callModel: CallModel,
-  options: PlanOptions,
+  timeoutMs: number,
   batch: AbortSignal,
 ): Promise<{ shots: Shots; usage: UsageRecord }> {
-  const timeoutMs = options.sceneTimeoutMs ?? SCENE_TIMEOUT_MS;
   const signal = deadline(batch, timeoutMs);
-  const result = await untilAborted(
-    callModel({
-      step: "plan",
-      instructions: composeInstructions("plan_scene", format),
-      input: JSON.stringify({ ...shared, scene: sceneNumber }),
-      schema: sceneShotsOutput,
-      maxOutputTokens: SCENE_MAX_OUTPUT_TOKENS,
-      signal,
-      timeoutMs,
-    }),
-    signal,
-  );
+  const own = section(SECTION.sceneToWrite, `Scene ${sceneNumber}`);
+  const input = shared.cached ? { cachedPrefix: shared.prefix, input: own } : { input: `${shared.prefix}${own}` };
+  const result = await untilAborted(callModel({ ...call, ...input, signal, timeoutMs }), signal);
   const parsed = sceneShotsOutput.safeParse(result.output);
   if (!parsed.success) throw new ModelOutputError(`Invalid shots for scene ${sceneNumber}`, result.usage);
   if (!parsed.data.shots.length) throw new PlanGenerationError("scene", `Scene ${sceneNumber} has no shots.`);
@@ -123,8 +160,9 @@ async function writeScene(
 
 /**
  * Writes a shot plan in parts so no single model call has to produce the whole plan: one outline call, then one call
- * per scene, all in parallel. All-or-nothing: the first failed part aborts the others and fails the plan.
- * Bounded at 1 + MAX_PLAN_SCENES calls. Returns one usage record summing every call.
+ * per scene, all in parallel, reading their shared prefix from the prompt cache when a prewarm could write it.
+ * All-or-nothing: the first failed part aborts the others and fails the plan; a failed prewarm only turns caching off.
+ * Bounded at 2 + MAX_PLAN_SCENES calls. Returns one usage record summing every call, the prewarm included.
  */
 export async function runPlan(input: PlanInput, callModel: CallModel, options: PlanOptions = {}): Promise<PlanResult> {
   const format = input.format ?? DEFAULT_FORMAT;
@@ -132,15 +170,32 @@ export async function runPlan(input: PlanInput, callModel: CallModel, options: P
 
   const batch = new AbortController();
   const parent = options.signal ? AbortSignal.any([options.signal, batch.signal]) : batch.signal;
-  const shared: SceneInput = {
-    story: input.story,
-    answers: input.answers,
-    collected: input.collected ?? [],
-    outline: outlineBrief(outline),
+  const scene: SceneCall = {
+    step: "plan",
+    stage: "plan_scene",
+    instructions: composeInstructions("plan_scene", format),
+    schema: sceneShotsOutput,
+    maxOutputTokens: SCENE_MAX_OUTPUT_TOKENS,
   };
+  const prefix = `${sections(
+    textSection(SECTION.story, input.story),
+    collectedSection(input.collected ?? []),
+    listSection(SECTION.directions, extraDirections(input.answers)),
+    jsonSection(SECTION.outline, outlineBrief(outline)),
+  )}\n`;
+  const prewarmStarted = Date.now();
+  const prewarmTimeoutMs = options.prewarmTimeoutMs ?? PREWARM_TIMEOUT_MS;
+  const prewarm = await prewarmPrefix(
+    callModel,
+    { ...scene, cachedPrefix: prefix, signal: deadline(parent, prewarmTimeoutMs), timeoutMs: prewarmTimeoutMs },
+    outline.scenes.length,
+  );
+  // The prewarm runs inside the scene budget so the plan still fits the route's maxDuration.
+  const sceneTimeoutMs = Math.max(1, (options.sceneTimeoutMs ?? SCENE_TIMEOUT_MS) - (Date.now() - prewarmStarted));
+  const shared = { prefix, cached: prewarm.cachedPrefix !== undefined };
   const scenes = await Promise.all(
     outline.scenes.map((_, index) =>
-      writeScene(index + 1, shared, format, callModel, options, parent).catch((error: unknown) => {
+      writeScene(index + 1, scene, shared, callModel, sceneTimeoutMs, parent).catch((error: unknown) => {
         batch.abort(error);
         throw error;
       }),
@@ -158,5 +213,6 @@ export async function runPlan(input: PlanInput, callModel: CallModel, options: P
   };
   const problem = findPlanProblem(plan);
   if (problem) throw new PlanGenerationError("invalid_plan", problem);
-  return { plan, usage: sumUsage("plan", [outlineUsage, ...scenes.map(({ usage }) => usage)]) };
+  const prewarmUsage = prewarm.usage ? [prewarm.usage] : [];
+  return { plan, usage: sumUsage("plan", [outlineUsage, ...prewarmUsage, ...scenes.map(({ usage }) => usage)]) };
 }

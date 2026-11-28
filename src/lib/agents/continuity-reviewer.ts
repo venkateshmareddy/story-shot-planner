@@ -1,47 +1,38 @@
-import { SOURCE_STORY_RULE } from "@/lib/server/prompts";
 import type { ShotPlan } from "@/lib/story-planning";
 import { specialistOutput } from "./schemas";
 import {
+  expertInstructions,
+  CONTEXT_ACTION_CHARACTERS,
   clip,
+  planExcerpt,
   SPECIALIST_MAX_OUTPUT_TOKENS,
   type SpecialistDefinition,
-  shotId,
-  specialistInstructions,
+  specialistRole,
 } from "./shared";
 
 const fields = ["location", "characters"] as const;
 
 export const continuityReviewer: SpecialistDefinition = {
   id: "continuity-reviewer",
-  role: "Script Supervisor",
+  role: specialistRole("continuity-reviewer"),
   fields,
   contextCategories: ["characters", "relationships", "locations", "scenes", "shots", "production"],
   schema: specialistOutput(fields),
   maxOutputTokens: SPECIALIST_MAX_OUTPUT_TOKENS,
   readsSource: true,
-  instructions: specialistInstructions(
-    "Script Supervisor",
-    `You think like a professional script supervisor: find the errors an audience would notice or a shoot would trip over, such as characters who speak or act without being listed in the shot, inconsistent names, and screen-geography problems. ${SOURCE_STORY_RULE}`,
-    "Fields: location is one location name, using an existing name exactly where one fits; characters is a comma-separated list of the existing character names on screen in that shot. Both are shot-level.",
-    {
-      id: "continuity-reviewer",
-      checklist:
-        "character appearance (costume, hair, makeup) and positioning in frame; props; locations; timeline and time of day; scene-to-scene consistency; visual and story errors",
-    },
-  ),
+  instructions: expertInstructions("continuity-reviewer"),
   buildContext: (plan: ShotPlan) => ({
     characters: plan.characters.map(({ name, look }) => ({ name, look: clip(look, 200) })),
     locations: plan.locations.map(({ name, description }) => ({ name, description: clip(description, 200) })),
-    scenes: plan.scenes.map((scene, sceneIndex) => ({
-      scene: sceneIndex + 1,
-      title: scene.title,
-      shots: scene.shots.map((shot, shotIndex) => ({
-        id: shotId(sceneIndex, shotIndex),
-        location: shot.location,
-        characters: shot.characters,
-        speakers: [...new Set(shot.dialogue.map(({ speaker }) => speaker))],
-        action: clip(shot.action),
-      })),
-    })),
+    scenes: planExcerpt(
+      plan,
+      ({ location, characters }) => ({ location, characters }),
+      (shot) => ({
+        unlistedSpeakers: [...new Set(shot.dialogue.map(({ speaker }) => speaker))].filter(
+          (speaker) => !shot.characters.includes(speaker),
+        ),
+        action: clip(shot.action, CONTEXT_ACTION_CHARACTERS),
+      }),
+    ),
   }),
 };

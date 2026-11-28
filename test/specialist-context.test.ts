@@ -13,19 +13,37 @@ import { ANALYSIS_STYLE, DIRECTOR_PERSONA, PLAIN_LANGUAGE, SOURCE_RULES, SOURCE_
 import type { ContextFact, StoryContext } from "../src/lib/story-context.ts";
 import { MAX_REFINE_SOURCE_CHARACTERS, type RefineRequest, type ShotPlan } from "../src/lib/story-planning.ts";
 import type { UsageRecord, UsageStep } from "../src/lib/usage.ts";
+import { decisionsOf, memoryFacts, sectionJson, sectionList, sectionText } from "./model-input.ts";
 
 type Fact = ContextFact;
 type Status = "filmmaker" | "approved" | "ai_suggestion";
 type SentFact = { category: string; label: string; value: string; status: Status };
 type SpecialistInput = {
   message: string;
-  recent: unknown[];
+  recent: string[];
   context?: { facts: SentFact[]; openQuestions: string[] };
-  approved?: unknown;
+  approved?: { collected: string[] };
   decisions: DecisionRecord[];
   source?: string;
   plan: unknown;
 };
+
+/** A specialist's Markdown input read back into the parts it is given. */
+function readSpecialistInput(input: string): SpecialistInput {
+  const openQuestions = sectionList(input, "OPEN QUESTIONS");
+  const hasMemory = sectionText(input, "MEMORY — what we know") !== undefined || openQuestions.length > 0;
+  const collected = sectionText(input, "COLLECTED") === undefined ? null : sectionList(input, "COLLECTED");
+  const source = sectionText(input, "STORY SOURCE");
+  return {
+    message: sectionText(input, "MESSAGE") ?? "",
+    recent: (sectionText(input, "RECENT CHAT") ?? "").split("\n").filter(Boolean),
+    ...(hasMemory ? { context: { facts: memoryFacts(input), openQuestions } } : {}),
+    ...(collected ? { approved: { collected } } : {}),
+    decisions: decisionsOf(input),
+    ...(source === undefined ? {} : { source }),
+    plan: sectionJson(input, "PLAN (JSON)"),
+  };
+}
 
 function makePlan(): ShotPlan {
   const shot = (overrides: Partial<ShotPlan["scenes"][number]["shots"][number]> = {}) => ({
@@ -142,7 +160,7 @@ function fakeTeam(recommendations = 1) {
   const inputOf = (id: SpecialistId) => {
     const call = calls.find(({ step }) => step === id);
     assert.ok(call, `${id} was not called`);
-    return JSON.parse(call.input) as SpecialistInput;
+    return readSpecialistInput(call.input);
   };
   return { deps, calls, refined, inputOf };
 }
@@ -253,7 +271,8 @@ test("specialist and synthesis instructions inherit the Creative Director person
     assert.match(text, /never all at once/, definition.id);
     assert.match(text, /Stay strictly in your discipline\. The other experts cover/, definition.id);
     assert.match(text, /rejected decision/, definition.id);
-    assert.match(text, /ai_suggestion/, definition.id);
+    assert.match(text, /AI suggestions are earlier AI guesses/, definition.id);
+    assert.match(text, /MEMORY — what we know and OPEN QUESTIONS/, definition.id);
     assert.match(text, /up to 5/, definition.id);
   }
   assert.match(SPECIALISTS["cinematography-director"].instructions, /depth of field/);
@@ -301,18 +320,19 @@ test("synthesis sees established facts only and deeper findings for a focused te
   await runDirector(request("Better lighting and a softer score", { context: CONTEXT }), team.deps);
   const synthesis = team.calls.find(({ step }) => step === "orchestrator");
   assert.ok(synthesis);
-  const payload = JSON.parse(synthesis.input) as {
-    established: string[];
-    specialists: { recommendations: { issue: string }[] }[];
-  };
-  assert.ok(payload.established.length > 0 && payload.established.length <= 8);
-  assert.ok(payload.established.some((line) => line.includes("Three minutes")));
-  assert.ok(!payload.established.some((line) => line.includes("Slow handheld") || line.includes("Sparse, whispered")));
-  assert.equal(payload.specialists.length, 2);
-  for (const specialist of payload.specialists) {
-    assert.equal(specialist.recommendations.length, 5);
-    assert.ok(specialist.recommendations[0].issue);
-  }
+  const established = sectionList(synthesis.input, "ESTABLISHED");
+  assert.ok(established.length > 0 && established.length <= 8);
+  assert.ok(established.some((line) => line.includes("Three minutes")));
+  assert.ok(!established.some((line) => line.includes("Slow handheld") || line.includes("Sparse, whispered")));
+  const findings = (sectionText(synthesis.input, "FINDINGS") ?? "").split("\n");
+  const disciplines = findings.filter((line) => !line.startsWith("- "));
+  assert.deepEqual(
+    disciplines.map((line) => line.split(":")[0]),
+    ["Camera", "Sound"],
+  );
+  const points = findings.filter((line) => line.startsWith("- "));
+  assert.equal(points.length, 10);
+  assert.ok(points.every((line) => /^- medium · \S+ · issue: Issue \d · change: Recommendation \d · why: Rationale \d$/.test(line)));
 });
 
 test("without a StoryContext specialists fall back to the flat approved list", async () => {
@@ -321,7 +341,7 @@ test("without a StoryContext specialists fall back to the flat approved list", a
     await runDirector(request("How should the music work?", extra), team.deps);
     const input = team.inputOf("sound-director");
     assert.equal(input.context, undefined);
-    assert.deepEqual(input.approved, { collected: [{ label: "Sound", detail: "Mostly silence with rain" }] });
+    assert.deepEqual(input.approved, { collected: ["Sound: Mostly silence with rain"] });
     assert.deepEqual(input.decisions, []);
   }
 });

@@ -2,6 +2,8 @@ import type OpenAI from "openai";
 import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 import { STORY_MODEL } from "@/lib/models";
+import { brainFile } from "@/lib/server/brain";
+import { cacheWriteTokens, logModelUsage, modelRequest } from "@/lib/server/openai";
 import { SOURCE_RULES } from "@/lib/server/prompts";
 import { chunkText, type DigestResponse, MAX_DIGEST_CHARACTERS, MAX_SOURCE_CHARACTERS } from "@/lib/source-text";
 import { toUsageRecord, type UsageRecord } from "@/lib/usage";
@@ -32,12 +34,7 @@ export const chunkDigestOutput = z.object({
 });
 export type ChunkDigest = z.infer<typeof chunkDigestOutput>;
 
-export const DIGEST_INSTRUCTIONS = [
-  SOURCE_RULES,
-  "You condense one part of a long story that a filmmaker imported, so a short film can be planned from it later. The JSON input holds the file name (source), which part this is (part of parts) and that part's text (text). Other parts are condensed separately: cover only this part, from its first line to its last.",
-  "Preserve every character name exactly as written, the order of events and specific details (objects, numbers, times, colours, injuries, weather). Never invent, guess, merge or add anything that is not in the text. When the text has nothing for a field, return an empty list or an empty string.",
-  'Fields: events is what happens, in order, one short sentence each (at most 12). characters is each person who appears, as "Name: key details" such as role, look, relationships and what they want (at most 8). places is each location, as "Name: what it looks like" (at most 6). dialogue is the most important lines copied word for word, never paraphrased, as "Speaker: line" (use "Unknown" when the speaker is unclear; at most 6). tone is one or two sentences on the mood and feel. visuals is notable props and visual details (at most 6).',
-].join("\n");
+export const DIGEST_INSTRUCTIONS = [SOURCE_RULES, brainFile("helpers/DIGEST.md")].join("\n");
 
 export type DigestModelCall = {
   instructions: string;
@@ -71,20 +68,13 @@ export class DigestError extends Error {
 
 export function openAIDigestModel(client: Pick<OpenAI, "responses">): DigestCallModel {
   return async ({ instructions, input, maxOutputTokens, signal }) => {
-    const response = await client.responses.parse(
-      {
-        model: STORY_MODEL,
-        store: false,
-        instructions,
-        input,
-        max_output_tokens: maxOutputTokens,
-        text: { format: zodTextFormat(chunkDigestOutput, "story_digest_part") },
-      },
-      { signal },
-    );
+    const format = zodTextFormat(chunkDigestOutput, "story_digest_part");
+    const request = modelRequest("digest", { instructions, input, format, maxOutputTokens });
+    const response = await client.responses.parse(request, { signal });
     const model = response.model || STORY_MODEL;
     const usage = toUsageRecord("digest", model, response.usage);
-    console.info("Model usage", { step: "digest", model, usage });
+    const written = cacheWriteTokens(response.usage);
+    logModelUsage({ step: "digest", stage: "digest", model, usage, cacheWriteTokens: written });
     if (response.status !== "completed" || !response.output_parsed) throw new IncompleteDigestError(usage);
     return { output: response.output_parsed, usage };
   };

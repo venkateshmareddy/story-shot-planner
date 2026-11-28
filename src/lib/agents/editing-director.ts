@@ -1,11 +1,14 @@
 import type { ShotPlan } from "@/lib/story-planning";
 import { specialistOutput } from "./schemas";
 import {
+  expertInstructions,
+  CONTEXT_ACTION_CHARACTERS,
+  CONTEXT_EMOTION_CHARACTERS,
   clip,
+  planExcerpt,
   SPECIALIST_MAX_OUTPUT_TOKENS,
   type SpecialistDefinition,
-  shotId,
-  specialistInstructions,
+  specialistRole,
 } from "./shared";
 
 const fields = ["seconds"] as const;
@@ -16,36 +19,25 @@ const sumSeconds = (shots: ShotPlan["scenes"][number]["shots"]) =>
 
 export const editingDirector: SpecialistDefinition = {
   id: "editing-director",
-  role: "Editor",
+  role: specialistRole("editing-director"),
   fields,
   contextCategories: ["format", "structure", "scenes", "shots", "intent", "genre"],
   schema: specialistOutput(fields),
   maxOutputTokens: SPECIALIST_MAX_OUTPUT_TOKENS,
-  instructions: specialistInstructions(
-    "Editor",
-    "You think like a professional film editor: measure each shot's duration against its action, emotion and spoken words (about 2.5 words per second), and protect the film's total runtime.",
-    'Field: seconds is shot-level; value is the new duration as a plain positive number such as "3.5". Put transitions, cut points and reordering ideas in recommendations.',
-    {
-      id: "editing-director",
-      checklist:
-        "shot duration; rhythm and pacing; continuity across cuts; transitions; scene flow and order; emotional timing (how long a moment is held); narrative clarity (whether the audience can follow what happens)",
-    },
-  ),
+  instructions: expertInstructions("editing-director"),
   buildContext: (plan: ShotPlan) => ({
     title: plan.title,
     intent: plan.intent,
     totalSeconds: Math.round(plan.scenes.reduce((total, scene) => total + sumSeconds(scene.shots), 0) * 10) / 10,
-    scenes: plan.scenes.map((scene, sceneIndex) => ({
-      scene: sceneIndex + 1,
-      title: scene.title,
-      seconds: sumSeconds(scene.shots),
-      shots: scene.shots.map((shot, shotIndex) => ({
-        id: shotId(sceneIndex, shotIndex),
-        seconds: shot.seconds,
-        action: clip(shot.action, 240),
-        emotion: clip(shot.emotion, 160),
-        spokenWords: shot.dialogue.reduce((total, { line }) => total + wordCount(line), 0),
-      })),
-    })),
+    scenes: planExcerpt(
+      plan,
+      ({ seconds }) => ({ seconds }),
+      (shot) => ({
+        action: clip(shot.action, CONTEXT_ACTION_CHARACTERS),
+        emotion: clip(shot.emotion, CONTEXT_EMOTION_CHARACTERS),
+        spokenWords: shot.dialogue.reduce((total, { line }) => total + wordCount(line), 0) || undefined,
+      }),
+      (scene) => ({ sceneSeconds: sumSeconds(scene.shots) }),
+    ),
   }),
 };

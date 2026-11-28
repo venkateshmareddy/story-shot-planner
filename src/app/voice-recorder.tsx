@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { COMING_SOON_MESSAGE, VOICE_RECORDING_ENABLED } from "@/lib/features";
 import { MAX_VOICE_BYTES } from "@/lib/story-input";
 
 const formats = [
@@ -27,13 +28,16 @@ export function VoiceRecorder({
 }) {
   const [phase, setPhase] = useState<Phase>("idle");
   const [error, setError] = useState("");
+  const [comingSoon, setComingSoon] = useState(false);
   const active = useRef<MediaRecorder | null>(null);
   const mounted = useRef(false);
+  const comingSoonTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      if (comingSoonTimer.current) clearTimeout(comingSoonTimer.current);
       const recorder = active.current;
       active.current = null;
       if (recorder) {
@@ -45,6 +49,12 @@ export function VoiceRecorder({
       }
     };
   }, []);
+
+  function showComingSoon() {
+    setComingSoon(true);
+    if (comingSoonTimer.current) clearTimeout(comingSoonTimer.current);
+    comingSoonTimer.current = setTimeout(() => setComingSoon(false), 3_000);
+  }
 
   async function start() {
     if (busy) return;
@@ -131,6 +141,30 @@ export function VoiceRecorder({
 
   const recording = phase === "recording";
   const waiting = busy && phase === "idle";
+
+  if (!VOICE_RECORDING_ENABLED) {
+    return (
+      <div className="voice-recorder">
+        <button
+          className="icon-btn"
+          type="button"
+          aria-label="Voice input, coming soon"
+          title="Voice input: coming soon"
+          onClick={showComingSoon}
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <rect x="9" y="2" width="6" height="12" rx="3" />
+            <path d="M5 10a7 7 0 0 0 14 0" />
+            <line x1="12" y1="19" x2="12" y2="22" />
+          </svg>
+        </button>
+        <span role="status" className="muted voice-status">
+          {comingSoon ? COMING_SOON_MESSAGE : ""}
+        </span>
+      </div>
+    );
+  }
+
   return (
     <div className="voice-recorder">
       <button

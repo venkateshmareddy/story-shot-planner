@@ -1,6 +1,15 @@
 import type { z } from "zod";
-import { ANALYSIS_STYLE, DIRECTOR_PERSONA, PLAIN_LANGUAGE, SOURCE_RULES } from "@/lib/server/prompts";
-import type { ContextFact, StoryCategoryId, StoryContext } from "@/lib/story-context";
+import { brainSections, loadBrain } from "@/lib/server/brain";
+import { factStatus, type MemoryFact } from "@/lib/server/memory-view";
+import {
+  ANALYSIS_STYLE,
+  DIRECTOR_PERSONA,
+  MEMORY_RULE,
+  PLAIN_LANGUAGE,
+  SOURCE_RULES,
+  SOURCE_STORY_RULE,
+} from "@/lib/server/prompts";
+import type { StoryCategoryId, StoryContext } from "@/lib/story-context";
 import type { ShotPlan } from "@/lib/story-planning";
 import { domainScore } from "./router";
 import type { EditField } from "./schemas";
@@ -41,16 +50,68 @@ export function clip(text: string, max = 400) {
   return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat;
 }
 
-export type FactStatus = "filmmaker" | "approved" | "ai_suggestion";
+/** Bounds for plan text a specialist reads only as context, not as a field it edits. */
+export const CONTEXT_ACTION_CHARACTERS = 300;
+export const CONTEXT_EMOTION_CHARACTERS = 120;
 
-export type SpecialistFact = { category: StoryCategoryId; label: string; value: string; status: FactStatus };
+type PlanScene = ShotPlan["scenes"][number];
+export type PlanShot = PlanScene["shots"][number];
+type ExcerptFields = Record<string, unknown>;
+
+const SCENE_KEYS = new Set(["scene", "title", "shots"]);
+
+const isBlank = (value: unknown) =>
+  value === undefined || value === "" || (Array.isArray(value) && value.length === 0);
+
+function withoutBlanks(fields: ExcerptFields): ExcerptFields {
+  return Object.fromEntries(Object.entries(fields).filter(([, value]) => !isBlank(value)));
+}
+
+function sharedFields(shots: readonly ExcerptFields[]): ExcerptFields {
+  if (shots.length < 2) return {};
+  const [first, ...rest] = shots;
+  return Object.fromEntries(
+    Object.entries(first).filter(([key, value]) => {
+      const json = JSON.stringify(value);
+      return !SCENE_KEYS.has(key) && rest.every((shot) => key in shot && JSON.stringify(shot[key]) === json);
+    }),
+  );
+}
+
+/**
+ * The plan's scenes for one specialist: every scene and shot in plan order, each shot with its id, so an edit's 1-based
+ * scene and shot numbers address the same shot in the full plan. `own` holds the fields the specialist may edit and is
+ * sent for every shot as is; blank `context` values are dropped, and a context value every shot of a scene shares is
+ * stated once on the scene.
+ */
+export function planExcerpt(
+  plan: ShotPlan,
+  own: (shot: PlanShot) => ExcerptFields,
+  context: (shot: PlanShot) => ExcerptFields = () => ({}),
+  sceneFields: (scene: PlanScene) => ExcerptFields = () => ({}),
+) {
+  return plan.scenes.map((scene, sceneIndex) => {
+    const contexts = scene.shots.map((shot) => withoutBlanks(context(shot)));
+    const shared = sharedFields(contexts);
+    return {
+      scene: sceneIndex + 1,
+      title: scene.title,
+      ...sceneFields(scene),
+      ...shared,
+      shots: scene.shots.map((shot, shotIndex) => ({
+        id: shotId(sceneIndex, shotIndex),
+        ...own(shot),
+        ...Object.fromEntries(Object.entries(contexts[shotIndex]).filter(([key]) => !(key in shared))),
+      })),
+    };
+  });
+}
+
+export { type FactStatus, factStatus } from "@/lib/server/memory-view";
+
+export type SpecialistFact = MemoryFact;
 
 export type SpecialistStoryContext = { facts: SpecialistFact[]; openQuestions: string[] };
-
-export function factStatus(fact: Pick<ContextFact, "source" | "approved">): FactStatus {
-  if (fact.source === "user") return "filmmaker";
-  return fact.approved ? "approved" : "ai_suggestion";
-}
 
 /** The facts and open questions relevant to one discipline: constraints first, then by category relevance. */
 export function specialistContext(
@@ -92,13 +153,13 @@ export function recentDecisions(decisions: readonly DecisionRecord[] | undefined
   }));
 }
 
-const DISCIPLINE_SCOPE: Record<SpecialistId, string> = {
-  "story-analyst": "story purpose, motivation, conflict, structure and what the dialogue says",
-  "cinematography-director": "framing, camera angle and movement, lens, lighting and colour",
-  "sound-director": "dialogue clarity, ambience, effects, music and silence",
-  "editing-director": "shot length, pacing, cuts, transitions and scene order",
-  "continuity-reviewer": "names, appearance, props, places and timeline consistency",
-};
+type ExpertBrain = Readonly<Record<"role" | "scope" | "expertise" | "checklist" | "fields", string>>;
+
+const EXPERTS = Object.fromEntries(
+  SPECIALIST_IDS.map((id) => [id, brainSections(`experts/${id}.md`, { SOURCE_STORY_RULE }) as ExpertBrain]),
+) as Readonly<Record<SpecialistId, ExpertBrain>>;
+
+const TEAM = loadBrain("experts/TEAM.md");
 
 export type SpecialistDiscipline = {
   id: SpecialistId;
@@ -106,6 +167,7 @@ export type SpecialistDiscipline = {
   checklist: string;
 };
 
+/** SAFETY, IDENTITY + SOUL, then experts/TEAM.md filled with the expert's own text, around the two writing styles. */
 export function specialistInstructions(
   role: string,
   expertise: string,
@@ -114,27 +176,40 @@ export function specialistInstructions(
 ) {
   const others = discipline
     ? SPECIALIST_IDS.filter((other) => other !== discipline.id)
-        .map((other) => `${SPECIALIST_LABELS[other]} (${DISCIPLINE_SCOPE[other]})`)
+        .map((other) => `${SPECIALIST_LABELS[other]} (${EXPERTS[other].scope})`)
         .join("; ")
     : "";
+  const team = TEAM.sections({
+    ROLE: role,
+    EXPERTISE: expertise,
+    CHECKLIST: discipline?.checklist ?? "",
+    OTHERS: others,
+    FIELD_RULES: fieldRules,
+    MEMORY_RULE,
+    MAX_SPECIALIST_RECOMMENDATIONS,
+    MAX_SPECIALIST_EDITS,
+  });
   return [
     SOURCE_RULES,
     DIRECTOR_PERSONA,
-    `In this call you work as the team's ${role}, bringing the Creative Director's judgement to one discipline. ${expertise}`,
+    team.intro,
     PLAIN_LANGUAGE,
     ANALYSIS_STYLE,
-    discipline
-      ? `Checklist (consider where relevant, never all at once; pick what this request and this plan actually need): ${discipline.checklist}.`
-      : "",
-    discipline
-      ? `Stay strictly in your discipline. The other experts cover ${others}. Leave those points to them so the team never repeats itself.`
-      : "Stay strictly in your discipline.",
-    "Input: the filmmaker's message; recent conversation (recent); the project context relevant to you (context: facts with category, label, value and status, plus openQuestions still unresolved), or for older projects a flat list of approved details (approved); the filmmaker's decisions on earlier proposals, newest last (decisions); and the plan excerpt for your discipline (plan).",
-    "Facts with status filmmaker or approved, and approved details, are constraints: build on them and never contradict them; if one hurts the film, say why and offer an alternative for the filmmaker to decide. Facts with status ai_suggestion are earlier AI guesses you may challenge or replace. Treat openQuestions as unknowns and mark anything you assume about them as an assumption. Build on accepted decisions. Never re-propose a change from a rejected decision unless the filmmaker's message asks for it again.",
-    `summary: answer the filmmaker's message directly in 2-5 sentences with your main judgement and why; give a fuller assessment when they ask for a review. recommendations: up to ${MAX_SPECIALIST_RECOMMENDATIONS}, most important first, only points that matter. target is a shot id like S01_SH02, "Scene 2", "Character: Name" or "Overall"; issue names the specific problem in this plan; recommendation is the specific, actionable change (what, where and how); rationale explains why it matters for the audience or the shoot; priority is high (clearly hurts the film or the shoot), medium or low.`,
-    `edits: concrete replacement values, only when the filmmaker asks for a change or a clear fix exists in your discipline; otherwise []. At most ${MAX_SPECIALIST_EDITS} edits, the ones with the most impact first, even when the filmmaker asks about every shot or scene; when many shots need the same kind of change, say it once as a recommendation instead of editing each shot. scene and shot are 1-based and match the ids (S02_SH03 is scene 2, shot 3). ${fieldRules} value is the complete new text for that field. Edit only your own fields. You recommend and propose; the filmmaker approves every edit.`,
-    "Never invent story events, characters or dialogue.",
+    discipline ? team.checklist : "",
+    discipline ? `${team.stay} ${team.others}` : team.stay,
+    team.rules,
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+/** An expert's title from experts/<id>.md, such as "Story Analyst". */
+export function specialistRole(id: SpecialistId): string {
+  return EXPERTS[id].role;
+}
+
+/** One expert's full instructions, all from experts/<id>.md and experts/TEAM.md. */
+export function expertInstructions(id: SpecialistId): string {
+  const { role, expertise, fields, checklist } = EXPERTS[id];
+  return specialistInstructions(role, expertise, fields, { id, checklist });
 }

@@ -84,4 +84,5 @@ export const directorRequest = refineRequest.pick({ plan: true, messages: true, 
   references: z.array(imageReference).max(MAX_IMAGE_REFERENCES).optional(),
   context: storyContextSchema.optional(),
   decisions: z.array(decisionRecord).max(MAX_DECISIONS).optional(),
+  intent: z.literal("edit").optional(),
 });

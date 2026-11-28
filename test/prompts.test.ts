@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { expertInstructions } from "../src/lib/agents/shared.ts";
+import { SPECIALIST_IDS } from "../src/lib/agents/types.ts";
 import { FILM_FORMATS } from "../src/lib/formats.ts";
 import { composeInstructions, SOURCE_RULES, SOURCE_STORY_RULE, SUGGESTED_CONCEPT_RULE } from "../src/lib/server/prompts.ts";
-import { MAX_PLAN_SCENES, MAX_RENAMES } from "../src/lib/story-planning.ts";
+import { draftOutput, MAX_PLAN_SCENES, MAX_RENAMES } from "../src/lib/story-planning.ts";
 
 const STEPS = ["draft", "interview", "plan_outline", "plan_scene", "edit_plan", "edit_scene"] as const;
 
@@ -29,7 +31,7 @@ test("plan_outline carries the binding decisions, review-note labels and the sug
   const composed = composeInstructions("plan_outline", "short_film");
   assert.ok(composed.includes("interview answers"));
   assert.ok(composed.includes("collected creative details"));
-  assert.ok(composed.includes("approved true as binding"));
+  assert.ok(composed.includes("every From the filmmaker or Approved fact as binding"));
   assert.ok(composed.includes('"Assumption:"'));
   assert.ok(composed.includes('"Suggestion:"'));
   assert.ok(composed.includes(SUGGESTED_CONCEPT_RULE));
@@ -65,7 +67,7 @@ test("edit_plan decides the change, confirms it in plain words and asks for Appl
   assert.ok(composed.includes(`At most ${MAX_PLAN_SCENES} rewrites and inserts`));
   assert.ok(composed.includes("-1 to put it first"));
   assert.ok(composed.includes("Every index refers to the plan as sent"));
-  assert.ok(composed.includes("hints.namedScenes"));
+  assert.ok(composed.includes("HINTS (namedScenes, changesSceneList) come from word matching"));
   assert.ok(composed.includes("Never re-propose a change the filmmaker rejected unless the new message asks for it again"));
   assert.ok(composed.includes("build on accepted changes"));
   assert.ok(composed.includes(SOURCE_STORY_RULE));
@@ -85,4 +87,25 @@ test("edit_scene writes ONE complete scene, keeps what the instruction doesn't t
   assert.ok(composed.includes("3–6 seconds"));
   assert.ok(composed.includes(SOURCE_STORY_RULE));
   assert.ok(!composed.includes("press Apply"));
+});
+
+test("output stays lean: one-line shot fields, outline text and expert notes are bounded; the draft returns only the story", () => {
+  for (const stage of ["plan_scene", "edit_scene"] as const) {
+    const composed = composeInstructions(stage, "short_film");
+    assert.ok(composed.includes("framing, camera, emotion and each line's delivery are short phrases, not sentences"), stage);
+    assert.ok(composed.includes("sound is at most one short sentence"), stage);
+  }
+  const outline = composeInstructions("plan_outline", "short_film");
+  assert.ok(outline.includes("a one-sentence logline"));
+  assert.ok(outline.includes("role in a few words"));
+  assert.ok(outline.includes("reviewNotes, one short sentence each"));
+  for (const id of SPECIALIST_IDS) {
+    const instructions = expertInstructions(id);
+    assert.ok(instructions.includes("at most about 100 words"), id);
+    assert.ok(instructions.includes("issue (the specific problem in this plan, one short sentence)"), id);
+    assert.ok(instructions.includes("one short sentence), priority"), id);
+    assert.ok(!instructions.includes("fuller when they ask for a review"), id);
+  }
+  assert.deepEqual(Object.keys(draftOutput.shape), ["story"]);
+  assert.ok(!composeInstructions("draft", "short_film").includes("short reason"));
 });

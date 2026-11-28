@@ -1116,3 +1116,105 @@ textarea.editor-input { resize: vertical; }
 
 .chat-confirm { margin: .75rem 0 0; font-size: .86rem; font-weight: 600; }
 .chat-confirm + .chat-proposal-actions { margin-top: .5rem; }
+
+/* Token usage: cached share under the input total */
+.usage-totals .usage-cached {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+}
+
+/* Story originality report, proposal before → after view, Wikipedia lookups on the usage page */
+.conversation-panel[hidden] { display: none; }
+.originality-panel { display: flex; flex-direction: column; min-height: 0; }
+.orig-head { display: flex; align-items: flex-start; justify-content: space-between; gap: .75rem; padding-bottom: .75rem; border-bottom: 1px solid var(--line); }
+.orig-title { font: 650 1.1rem/1.2 system-ui, sans-serif; letter-spacing: normal; margin: 0; }
+.orig-title:focus { outline: none; }
+.orig-title:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.orig-close { min-height: 2rem; padding: .3rem .75rem; font-size: .82rem; }
+.orig-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: grid; align-content: start; gap: .9rem; padding: .9rem .15rem .5rem; font-size: .92rem; }
+.orig-body p { margin: 0; }
+.orig-intro, .orig-report { display: grid; gap: .9rem; }
+.orig-error { display: grid; gap: .45rem; justify-items: start; }
+.orig-run { display: grid; gap: .4rem; padding: .75rem .85rem; border: 1px solid var(--line); border-radius: .6rem; background: var(--background); }
+.orig-run-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .6rem; }
+.orig-check { display: inline-flex; align-items: flex-start; gap: .45rem; font-weight: 650; font-size: .88rem; cursor: pointer; }
+.orig-check input { margin-top: .2rem; accent-color: var(--accent); }
+.orig-run-btn { min-height: 2.25rem; padding: .4rem .9rem; }
+.orig-disclosure { font-size: .8rem; }
+.orig-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem .75rem; }
+.orig-mode { font-weight: 650; }
+.orig-date { font-size: .8rem; }
+.orig-stale { padding: .1rem .55rem; border: 1px solid var(--accent); border-radius: 999px; background: var(--highlight); color: var(--accent); font-size: .76rem; font-weight: 650; }
+.orig-note { font-size: .84rem; }
+.orig-note-warning { padding: .5rem .7rem; border-left: 3px solid var(--accent); background: var(--highlight); }
+.orig-label { display: block; margin-bottom: .2rem; color: var(--muted); font-size: .72rem; font-weight: 650; text-transform: uppercase; letter-spacing: .04em; }
+.orig-status { padding: .7rem .85rem; border: 1px solid var(--line); border-radius: .6rem; background: var(--paper); }
+.orig-status-concern { border-color: var(--accent); background: var(--highlight); }
+.orig-section { display: grid; gap: .5rem; }
+.orig-section-head { margin: 0; font: 650 .95rem/1.3 system-ui, sans-serif; letter-spacing: normal; }
+.orig-section-intro { font-size: .82rem; }
+.orig-coverage { display: flex; flex-wrap: wrap; gap: .35rem; margin: 0; padding: 0; list-style: none; }
+.orig-chip { padding: .15rem .6rem; border: 1px dashed var(--line); border-radius: 999px; color: var(--muted); font-size: .76rem; }
+.orig-chip-checked { border-style: solid; border-color: var(--accent); background: var(--highlight); color: var(--accent); font-weight: 650; }
+.orig-tropes { margin: 0; padding-left: 1.1rem; display: grid; gap: .3rem; font-size: .86rem; }
+.orig-legend { font-size: .82rem; }
+.originality-panel .orig-legend summary, .originality-panel .orig-dismissed summary, .chat-bubble .proposal-diff summary { cursor: pointer; color: var(--accent); font-weight: 650; font-size: .84rem; }
+.orig-legend dl { display: grid; gap: .4rem; margin: .5rem 0 0; }
+.orig-legend dl > div { display: grid; grid-template-columns: 5.5rem minmax(0, 1fr); gap: .5rem; align-items: baseline; }
+.orig-legend dd { margin: 0; color: var(--muted); }
+.orig-group { display: grid; gap: .5rem; }
+.orig-group-head { margin: .25rem 0 0; font: 650 .86rem/1.3 system-ui, sans-serif; letter-spacing: normal; }
+.orig-findings { display: grid; gap: .65rem; margin: 0; padding: 0; list-style: none; }
+.orig-finding { padding: .8rem .9rem; border: 1px solid var(--line); border-radius: .7rem; background: var(--paper); overflow-wrap: anywhere; }
+.orig-finding article { display: grid; gap: .5rem; }
+.orig-finding-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.orig-dimension { color: var(--muted); font-size: .76rem; font-weight: 650; }
+.orig-severity { display: inline-block; padding: .05rem .45rem; border: 1px solid var(--line); border-radius: 999px; background: var(--paper); color: var(--muted); font-size: .7rem; font-weight: 650; }
+.orig-severity-moderate { border-color: var(--accent); color: var(--accent); background: var(--highlight); }
+.orig-severity-high { border-color: var(--accent); background: var(--accent); color: #fff; }
+.orig-finding-title { margin: 0; font: 650 .95rem/1.3 system-ui, sans-serif; letter-spacing: normal; }
+.orig-parts { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem; }
+.orig-parts .orig-label { flex-basis: 100%; margin: 0; }
+.orig-ref { padding: .05rem .4rem; border: 1px solid var(--line); border-radius: .3rem; background: var(--background); font-size: .78rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.orig-excerpt { margin: 0; }
+.orig-excerpt blockquote, .orig-evidence { margin: 0; padding: .35rem .7rem; border-left: 2px solid var(--line); color: var(--muted); font-size: .86rem; font-style: italic; }
+.orig-basis { color: var(--muted); font-size: .78rem; font-style: italic; }
+.orig-source { display: grid; gap: .3rem; padding: .65rem .75rem; border: 1px solid var(--accent); border-radius: .55rem; background: var(--highlight); }
+.orig-source .orig-label { color: var(--accent); margin: 0; }
+.orig-source-title { font-weight: 650; }
+.orig-source-title a { color: var(--accent); }
+.orig-source-desc, .orig-source-meta { font-size: .78rem; }
+.orig-source .orig-evidence { border-left-color: var(--accent); color: var(--ink); }
+.orig-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; }
+.orig-actions .button { min-height: 2.1rem; padding: .3rem .7rem; font-size: .8rem; }
+.orig-dismiss { border: 0; background: none; color: var(--muted); font: inherit; font-size: .8rem; text-decoration: underline; padding: .25rem .2rem; cursor: pointer; }
+.orig-dismiss:disabled { opacity: .5; cursor: default; }
+.orig-confirm { display: grid; gap: .4rem; padding: .7rem .8rem; border: 1px solid var(--accent); border-radius: .55rem; background: var(--highlight); }
+.orig-confirm:focus { outline: none; }
+.orig-confirm:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.orig-confirm-head { float: left; width: 100%; padding: 0; font-weight: 650; }
+.orig-confirm-question { font-weight: 650; }
+.orig-confirm-list { margin: 0; padding-left: 1.1rem; display: grid; gap: .2rem; font-size: .84rem; }
+.orig-more { font-size: .78rem; }
+.orig-dismissed ul { display: grid; gap: .35rem; margin: .5rem 0 0; padding: 0; list-style: none; font-size: .86rem; }
+.orig-dismissed li { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .4rem; }
+.orig-disclaimer { padding-top: .7rem; border-top: 1px solid var(--line); color: var(--muted); font-size: .78rem; }
+.quick-action-originality { border-style: dashed; }
+
+.proposal-diff { margin-top: .65rem; padding-top: .55rem; border-top: 1px solid var(--line); font-size: .84rem; }
+.proposal-diff-list { display: grid; gap: .45rem; margin: .5rem 0 0; padding: 0; list-style: none; }
+.diff-item { display: grid; gap: .15rem; }
+.chat-bubble .diff-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: .4rem; }
+.diff-where { font-weight: 700; font-variant-numeric: tabular-nums; }
+.diff-what { color: var(--muted); font-size: .78rem; font-weight: 650; }
+.diff-values { overflow-wrap: anywhere; }
+.diff-before { color: var(--muted); text-decoration: line-through; }
+.diff-after { background: var(--highlight); color: var(--ink); text-decoration: none; }
+.diff-arrow { margin: 0 .35rem; color: var(--accent); font-weight: 700; }
+.chat-bubble .proposal-diff-more, .chat-bubble .proposal-diff-empty { margin-top: .4rem; font-size: .8rem; }
+
+.usage-totals .usage-lookups { margin: .25rem 0 0; font-size: .8rem; }
+
+@media (max-width: 60rem) {
+  .workspace-grid .originality-panel { height: 75dvh; min-height: 26rem; }
+}

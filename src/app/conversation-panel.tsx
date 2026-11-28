@@ -5,10 +5,12 @@ import { VoiceRecorder } from "./voice-recorder";
 import { type ImageReference, type Recommendation, SPECIALIST_LABELS, type SpecialistId } from "@/lib/agents/types";
 import { AUDIO_ACCEPT } from "@/lib/audio";
 import { formatReply } from "@/lib/format-reply";
+import { type PlanChange, planDiff } from "@/lib/plan-diff";
 import { proposalConfirmation } from "@/lib/proposal-copy";
-import { DISCOVERY_ACTIONS, QUICK_ACTIONS } from "@/lib/quick-actions";
+import { DISCOVERY_ACTIONS, ORIGINALITY_ACTION, QUICK_ACTIONS, showOriginalityAction } from "@/lib/quick-actions";
 import { MAX_ANSWER_CHARACTERS, MAX_CHAT_MESSAGE_CHARACTERS } from "@/lib/story-input";
 import type { ChatMessage, StorySession } from "@/lib/session";
+import type { ShotPlan } from "@/lib/story-planning";
 
 const PRIORITY_LABELS: Record<Recommendation["priority"], string> = { high: "High", medium: "Medium", low: "Low" };
 const OPEN_NOTES_LIMIT = 3;
@@ -139,6 +141,57 @@ function ReferenceNotes({ reference }: { reference: ImageReference }) {
         </dl>
       )}
     </div>
+  );
+}
+
+const CHANGE_KIND_LABELS: Record<PlanChange["kind"], string> = { changed: "Changed", added: "Added", removed: "Removed" };
+
+function ChangeValues({ change }: { change: PlanChange }) {
+  if (change.kind === "added") return <ins className="diff-after">{change.after || "—"}</ins>;
+  if (change.kind === "removed") return <del className="diff-before">{change.before || "—"}</del>;
+  return (
+    <>
+      <del className="diff-before">{change.before || "—"}</del>
+      <span className="diff-arrow" aria-hidden="true">
+        →
+      </span>
+      <span className="sr-only"> becomes </span>
+      <ins className="diff-after">{change.after || "—"}</ins>
+    </>
+  );
+}
+
+function ProposalDiff({ before, after }: { before: ShotPlan; after: ShotPlan }) {
+  const [open, setOpen] = useState(false);
+  const diff = useMemo(() => (open ? planDiff(before, after) : null), [open, before, after]);
+  return (
+    <details className="proposal-diff" onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>See what changes</summary>
+      {diff &&
+        (diff.changes.length === 0 ? (
+          <p className="muted proposal-diff-empty">Nothing on your board would change.</p>
+        ) : (
+          <>
+            <ul className="proposal-diff-list">
+              {diff.changes.map((change, index) => (
+                // biome-ignore lint/suspicious/noArrayIndexKey: The diff is derived from two fixed plans.
+                <li className={`diff-item diff-${change.kind}`} key={index}>
+                  <p className="diff-head">
+                    <span className="diff-where">{change.where}</span>
+                    <span className="diff-what">
+                      {change.kind === "changed" ? change.what : `${CHANGE_KIND_LABELS[change.kind]} ${change.what.toLowerCase()}`}
+                    </span>
+                  </p>
+                  <p className="diff-values">
+                    <ChangeValues change={change} />
+                  </p>
+                </li>
+              ))}
+            </ul>
+            {diff.hidden > 0 && <p className="muted proposal-diff-more">+{diff.hidden} more</p>}
+          </>
+        ))}
+    </details>
   );
 }
 
@@ -279,6 +332,8 @@ export function ConversationPanel({
   canGeneratePlan,
   uploading,
   busyText,
+  originalityOpen,
+  onOpenOriginality,
   onInput,
   onSend,
   onQuickAction,
@@ -302,6 +357,9 @@ export function ConversationPanel({
   canGeneratePlan: boolean;
   uploading: UploadingKind | null;
   busyText?: string;
+  /** The originality report covers this panel; it stays mounted so the chat keeps its state. */
+  originalityOpen: boolean;
+  onOpenOriginality: () => void;
   onInput: (value: string) => void;
   onSend: () => void;
   onQuickAction: (message: string) => void;
@@ -319,7 +377,18 @@ export function ConversationPanel({
   const logEnd = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const originalityChipRef = useRef<HTMLButtonElement>(null);
+  const wasOriginalityOpen = useRef(originalityOpen);
   const [editedIds, setEditedIds] = useState<ReadonlySet<string>>(() => new Set());
+
+  useEffect(() => {
+    if (wasOriginalityOpen.current && !originalityOpen) {
+      const chip = originalityChipRef.current;
+      if (chip && !chip.disabled) chip.focus();
+      else inputRef.current?.focus();
+    }
+    wasOriginalityOpen.current = originalityOpen;
+  }, [originalityOpen]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: scroll to the newest message when the log grows or a reply is pending.
   useEffect(() => {
@@ -352,7 +421,7 @@ export function ConversationPanel({
   }
 
   return (
-    <section className="conversation-panel panel" aria-label="AI conversation">
+    <section className="conversation-panel panel" aria-label="AI conversation" hidden={originalityOpen}>
       <div className="studio-chat-head">
         <div className="studio-chat-head-main">
           <h3>Creative director</h3>
@@ -430,6 +499,9 @@ export function ConversationPanel({
                 )}
                 {message.status === "pending" ? (
                   <>
+                    {message.proposedPlan && session.plan && (
+                      <ProposalDiff before={session.plan} after={message.proposedPlan} />
+                    )}
                     <p className="chat-confirm" id={`confirm-${message.id}`}>
                       {proposalConfirmation(message.changeSummary)}
                     </p>
@@ -504,6 +576,17 @@ export function ConversationPanel({
                 {action.label}
               </button>
             ))}
+            {showOriginalityAction(session) && (
+              <button
+                ref={originalityChipRef}
+                className="quick-action quick-action-originality"
+                type="button"
+                title={ORIGINALITY_ACTION.tooltip}
+                onClick={onOpenOriginality}
+              >
+                {ORIGINALITY_ACTION.label}
+              </button>
+            )}
           </fieldset>
         )}
         <label className="sr-only" htmlFor="conversation-input">
